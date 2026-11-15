@@ -409,8 +409,9 @@ namespace tsugiki::rt {
 void generic_call(tsugiki_state* s, const Stub& stub) {
     uint64_t back = s->x[30];
     HostCall c;
+    // ndk calls like ANativeWindow_fromSurface take the env, theirs not ours
     for (int i = 0; i < 6; ++i) {
-        c.ints[i] = s->x[i];
+        c.ints[i] = host_view(s->x[i]);
     }
     for (int i = 0; i < 8; ++i) {
         c.fps[i] = s->v[i].lo;
@@ -524,6 +525,18 @@ void on_segv(int signal, siginfo_t* info, void* context) {
             uc->uc_mcontext.gregs[REG_RIP] = greg_t(reinterpret_cast<uint64_t>(tsugiki_raw_entry));
             return;
         }
+        // host code using a guest env it got somehow: the real function, with the host's env
+        bool vm = false;
+        if (int slot = jni_stub_slot(at, &vm); slot >= 0) {
+            uint64_t guest = uint64_t(uc->uc_mcontext.gregs[REG_RDI]);
+            uint64_t host = host_view(guest);
+            if (host != guest) {
+                auto* functions = *reinterpret_cast<void* const* const*>(host);
+                uc->uc_mcontext.gregs[REG_RDI] = greg_t(host);
+                uc->uc_mcontext.gregs[REG_RIP] = greg_t(reinterpret_cast<uint64_t>(functions[slot]));
+                return;
+            }
+        }
         // a stub handed to the host, like &strlen: run what's behind it
         Stubs& st = stubs();
         uint64_t offset = at - st.base;
@@ -535,7 +548,10 @@ void on_segv(int signal, siginfo_t* info, void* context) {
             }
         }
     }
-    // not ours
+    // not ours: the guest's handler first, then whoever was there before us
+    if (guest_segv(signal, info, context)) {
+        return;
+    }
     if (previous_segv.sa_flags & SA_SIGINFO) {
         if (previous_segv.sa_sigaction) {
             previous_segv.sa_sigaction(signal, info, context);

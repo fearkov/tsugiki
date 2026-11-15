@@ -168,6 +168,7 @@ static inline F ts_frsqrts(F a, F b) {
     return __builtin_elementwise_fma(-a, b, (F)3.0) / (F)2.0;
 }
 
+#pragma GCC visibility push(default)
 extern "C" {
 // the arm estimate tables, bit exact
 float tsugiki_frecpe_s(float x);
@@ -182,6 +183,7 @@ int32_t tsugiki_fjcvtzs(tsugiki_state* s, double x);
 void tsugiki_aes(tsugiki_state* s, int op, int d, int n);
 void tsugiki_sha(tsugiki_state* s, int op, int d, int n, int m);
 }
+#pragma GCC visibility pop
 
 template <typename V, typename E>
 static inline V ts_vfmulx(V a, V b) {

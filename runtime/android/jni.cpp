@@ -1,5 +1,6 @@
 // jni for guest code: its own JNIEnv and JavaVM, every entry a stub into the real ones
 #include <jni.h>
+#include <sys/mman.h>
 
 #include <cstddef>
 #include <cstring>
@@ -255,39 +256,91 @@ void tables() {
 
 }  // namespace
 
-uint64_t guest_env(void* host_env) {
-    if (host_env == nullptr) {
+namespace {
+
+// guest envs and vms live in one region, so a pointer into it is easy to spot
+// in args the guest hands the host, like ANativeWindow_fromSurface(env, surface)
+constexpr size_t most_views = 1 << 14;
+
+struct Views {
+    // two words each, functions then host, same shape for envs and vms
+    uint64_t (*words)[2] = nullptr;
+    size_t used = 0;
+    std::mutex lock;
+    std::unordered_map<void*, uint64_t> of_host;
+    Views() {
+        void* region = mmap(nullptr, most_views * 16, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (region == MAP_FAILED) {
+            fail("no memory for guest jni views");
+        }
+        words = static_cast<uint64_t (*)[2]>(region);
+    }
+};
+
+Views& views() {
+    static Views* v = new Views;
+    return *v;
+}
+
+uint64_t view_of(void* host, const uint64_t* table) {
+    if (host == nullptr) {
         return 0;
     }
     tables();
-    // one per host env, they never go away
-    static std::mutex lock;
-    static std::unordered_map<void*, GuestEnv*> envs;
-    std::lock_guard guard(lock);
-    auto it = envs.find(host_env);
-    if (it == envs.end()) {
-        it = envs.emplace(host_env, new GuestEnv{env_table, static_cast<JNIEnv*>(host_env)}).first;
+    Views& v = views();
+    std::lock_guard guard(v.lock);
+    auto it = v.of_host.find(host);
+    if (it != v.of_host.end()) {
+        return it->second;
     }
-    return reinterpret_cast<uint64_t>(it->second);
+    if (v.used >= most_views) {
+        fail("too many jni envs");
+    }
+    uint64_t* w = v.words[v.used++];
+    w[0] = reinterpret_cast<uint64_t>(table);
+    w[1] = reinterpret_cast<uint64_t>(host);
+    uint64_t view = reinterpret_cast<uint64_t>(w);
+    v.of_host.emplace(host, view);
+    return view;
+}
+
+}  // namespace
+
+uint64_t guest_env(void* host_env) {
+    return view_of(host_env, env_table);
 }
 
 uint64_t guest_vm(void* host_vm) {
-    if (host_vm == nullptr) {
-        return 0;
-    }
-    tables();
-    static std::mutex lock;
-    static std::unordered_map<void*, GuestVm*> vms;
-    std::lock_guard guard(lock);
-    auto it = vms.find(host_vm);
-    if (it == vms.end()) {
-        it = vms.emplace(host_vm, new GuestVm{vm_table, static_cast<JavaVM*>(host_vm)}).first;
-    }
-    return reinterpret_cast<uint64_t>(it->second);
+    return view_of(host_vm, vm_table);
 }
 
 void* host_env_of(uint64_t guest) {
     return reinterpret_cast<GuestEnv*>(guest)->host;
+}
+
+uint64_t host_view(uint64_t value) {
+    Views& v = views();
+    uint64_t begin = reinterpret_cast<uint64_t>(v.words);
+    if (value - begin < most_views * 16 && (value - begin) % 16 == 0) {
+        return reinterpret_cast<const uint64_t*>(value)[1];
+    }
+    return value;
+}
+
+int jni_stub_slot(uint64_t address, bool* vm) {
+    for (size_t i = 0; i < env_slots; ++i) {
+        if (env_table[i] == address) {
+            *vm = false;
+            return int(i);
+        }
+    }
+    for (size_t i = 0; i < vm_slots; ++i) {
+        if (vm_table[i] == address) {
+            *vm = true;
+            return int(i);
+        }
+    }
+    return -1;
 }
 
 uint64_t jni_import(const std::string&) {

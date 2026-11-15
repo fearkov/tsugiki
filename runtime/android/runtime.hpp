@@ -2,6 +2,7 @@
 #pragma once
 
 #include <dlfcn.h>
+#include <signal.h>
 
 #include <vector>
 
@@ -49,6 +50,14 @@ uint64_t guest_vm(void* host_vm);
 void* host_env_of(uint64_t guest_env);
 
 // guest arg readers for thunks: the nth int or fp arg of a call, past x0..x7 and v0..v7
+// the host env or vm behind a guest one, anything else as it is
+uint64_t host_view(uint64_t value);
+// which slot of the guest env or vm table a stub address is, -1 if neither
+int jni_stub_slot(uint64_t address, bool* vm);
+
+// a sigsegv we don't handle, passed to the guest's handler; false if it has none
+bool guest_segv(int sig, siginfo_t* info, void* context);
+
 // a plain callback slot's guest function, 0 if it isn't one
 uint64_t callback_target(uint64_t address);
 

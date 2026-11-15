@@ -4,6 +4,10 @@
 #define _BSD_SOURCE
 #include <SLES/OpenSLES.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/epoll.h>
+#include <sys/stat.h>
 #include <pthread.h>
 #include <setjmp.h>
 #include <stdarg.h>
@@ -184,4 +188,54 @@ int bridge_tls(void) {
     if (worker != 15000 + 'w' + 'w') return -1;
     if (tls_name[0] != 'm' || tls_big[0] != 0) return -2;
     return tls_counter;
+}
+
+// struct stat is laid out differently on the two sides, a wrong size trips the canary
+long bridge_stat(const char* path) {
+    struct stat a, b;
+    if (stat(path, &a) != 0) return -1;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -2;
+    int r = fstat(fd, &b);
+    close(fd);
+    if (r != 0) return -3;
+    if (a.st_size != b.st_size || a.st_ino != b.st_ino || a.st_mode != b.st_mode || !S_ISREG(a.st_mode)) return -4;
+    return (long)a.st_size;
+}
+
+// so is epoll_event
+int bridge_epoll(void) {
+    int p[2];
+    if (pipe(p) != 0) return -1;
+    int ep = epoll_create1(0);
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof ev);
+    ev.events = EPOLLIN;
+    ev.data.u64 = 0x1122334455667788ull;
+    if (epoll_ctl(ep, EPOLL_CTL_ADD, p[0], &ev) != 0) return -2;
+    if (write(p[1], "x", 1) != 1) return -3;
+    struct epoll_event out[4];
+    memset(out, 0, sizeof out);
+    int n = epoll_wait(ep, out, 4, 1000);
+    close(ep);
+    close(p[0]);
+    close(p[1]);
+    if (n != 1) return -4;
+    return out[0].data.u64 == 0x1122334455667788ull && (out[0].events & EPOLLIN) ? 1 : -5;
+}
+
+static volatile int got_signal;
+
+static void on_usr1(int sig) { got_signal = sig; }
+
+// a guest handler the kernel calls on a host thread
+int bridge_signal(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_usr1;
+    if (sigaction(SIGUSR1, &sa, NULL) != 0) return -1;
+    raise(SIGUSR1);
+    struct sigaction back;
+    sigaction(SIGUSR1, NULL, &back);
+    return got_signal == SIGUSR1 && back.sa_handler == on_usr1 ? 1 : 0;
 }

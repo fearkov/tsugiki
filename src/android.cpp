@@ -180,8 +180,10 @@ void build_runtime(const std::string& dir) {
             sources += " " + quote(file);
         }
     }
-    run(compiler() + " -std=c++20 -O2 -fPIC -shared -I" + quote(source + "/runtime") + " -I" + quote(source + "/src") + sources +
-        " -llog -ldl -static-libstdc++ -Wl,-soname,libtsugiki.so -o " + quote(dir + "/libtsugiki.so"));
+    // hidden and bound to itself: a guest lib re-exporting its static libc++ must never catch our own calls
+    run(compiler() + " -std=c++20 -O2 -fPIC -shared -fvisibility=hidden -fvisibility-inlines-hidden -I" + quote(source + "/runtime") + " -I" +
+        quote(source + "/src") + sources + " -llog -ldl -static-libstdc++ -Wl,--exclude-libs,ALL -Wl,-Bsymbolic -Wl,-soname,libtsugiki.so -o " +
+        quote(dir + "/libtsugiki.so"));
 }
 
 bool is_executable(const elf::Library& library) {
@@ -201,6 +203,11 @@ void build_library(const std::string& path, const std::string& dir, int jobs) {
     fs::create_directories(work);
     elf::Library library = read_library(path);
     std::string soname = soname_of(library, path);
+    // like make: nothing newer than what we built last time, the translator and its headers included
+    std::string source = TSUGIKI_SOURCE_DIR;
+    if (!stale(fs::path(dir) / soname, {path, fs::read_symlink("/proc/self/exe").string(), source + "/runtime/tsugiki.h", source + "/runtime/tsugiki_simd.h"})) {
+        return;
+    }
     std::string id = library_id(soname);
     bool executable = is_executable(library);
     fs::path base = work / fs::path(soname).stem();
@@ -381,7 +388,11 @@ void build_apk(const std::string& in, const std::string& out, bool force, int jo
         for (const std::string& name : apk.libraries("arm64-v8a")) {
             fs::path path = work / "arm64" / fs::path(name).filename();
             auto bytes = apk.read(name);
-            write_text(path, std::string(bytes.begin(), bytes.end()));
+            std::string text(bytes.begin(), bytes.end());
+            // untouched if it's the same, so its translation isn't redone
+            if (!fs::exists(path) || read_text(path) != text) {
+                write_text(path, text);
+            }
             paths.push_back(path.string());
         }
     }

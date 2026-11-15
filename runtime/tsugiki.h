@@ -60,6 +60,8 @@ struct tsugiki_module {
     void* loaded;
 };
 
+// the runtime builds with hidden visibility, only this api is exported
+#pragma GCC visibility push(default)
 extern "C" {
 // maps the image, relocates it, runs its constructors
 void tsugiki_load(tsugiki_module* m);
@@ -75,6 +77,7 @@ void tsugiki_msr(tsugiki_state* s, uint32_t reg, uint64_t value);
 void tsugiki_sys(tsugiki_state* s, uint32_t op, uint64_t value);
 uint32_t tsugiki_crc32(uint32_t crc, uint64_t value, int bytes, int castagnoli);
 }
+#pragma GCC visibility pop
 
 // guest memory is our memory
 static inline uint8_t ts_ld8(uint64_t a) { return *(const volatile uint8_t*)a; }

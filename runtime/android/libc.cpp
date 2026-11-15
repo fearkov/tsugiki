@@ -4,10 +4,14 @@
 #include <link.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <signal.h>
 #include <sys/auxv.h>
+#include <sys/epoll.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -15,10 +19,13 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "android/runtime.hpp"
 
 extern "C" int __cxa_thread_atexit_impl(void (*)(void*), void*, void*);
+// ours, every shared lib has one
+extern "C" void* __dso_handle;
 
 extern "C" int __cxa_atexit(void (*)(void*), void*, void*);
 
@@ -539,16 +546,211 @@ void dladdr_thunk(tsugiki_state* s, const Stub&) {
     ret(s, s->x[30], uint64_t(found));
 }
 
-// thread_local destructors
+// thread_local destructors; the linker wants a dso it knows, the guest's handle is inside its image
 void cxa_thread_atexit_thunk(tsugiki_state* s, const Stub&) {
     auto f = reinterpret_cast<void (*)(void*)>(host_callback(s->x[0], plain));
-    ret(s, s->x[30], uint64_t(int64_t(__cxa_thread_atexit_impl(f, ptr<void>(s->x[1]), ptr<void>(s->x[2])))));
+    ret(s, s->x[30], uint64_t(int64_t(__cxa_thread_atexit_impl(f, ptr<void>(s->x[1]), &__dso_handle))));
 }
 
 void pthread_atfork_thunk(tsugiki_state* s, const Stub&) {
     auto wrap = [](uint64_t f) { return f ? reinterpret_cast<void (*)()>(host_callback(f, plain)) : nullptr; };
     ret(s, s->x[30], uint64_t(int64_t(pthread_atfork(wrap(s->x[0]), wrap(s->x[1]), wrap(s->x[2])))));
 }
+
+// ---- structs laid out differently on arm64 ----
+
+// arm64's struct stat, the asm-generic one; x86_64's is 144 bytes in another order
+struct GuestStat {
+    uint64_t dev;
+    uint64_t ino;
+    uint32_t mode;
+    uint32_t nlink;
+    uint32_t uid;
+    uint32_t gid;
+    uint64_t rdev;
+    uint64_t pad1;
+    int64_t size;
+    int32_t blksize;
+    int32_t pad2;
+    int64_t blocks;
+    timespec atim, mtim, ctim;
+    uint32_t unused4, unused5;
+};
+static_assert(sizeof(GuestStat) == 128);
+
+void stat_out(int r, const struct stat& h, uint64_t out) {
+    if (r != 0 || out == 0) {
+        return;
+    }
+    GuestStat g{};
+    g.dev = h.st_dev;
+    g.ino = h.st_ino;
+    g.mode = h.st_mode;
+    g.nlink = uint32_t(h.st_nlink);
+    g.uid = h.st_uid;
+    g.gid = h.st_gid;
+    g.rdev = h.st_rdev;
+    g.size = h.st_size;
+    g.blksize = int32_t(h.st_blksize);
+    g.blocks = h.st_blocks;
+    g.atim = h.st_atim;
+    g.mtim = h.st_mtim;
+    g.ctim = h.st_ctim;
+    std::memcpy(ptr<void>(out), &g, sizeof g);
+}
+
+void stat_thunk(tsugiki_state* s, const Stub&) {
+    struct stat h;
+    int r = stat(ptr<const char>(s->x[0]), &h);
+    stat_out(r, h, s->x[1]);
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
+void lstat_thunk(tsugiki_state* s, const Stub&) {
+    struct stat h;
+    int r = lstat(ptr<const char>(s->x[0]), &h);
+    stat_out(r, h, s->x[1]);
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
+void fstat_thunk(tsugiki_state* s, const Stub&) {
+    struct stat h;
+    int r = fstat(int(s->x[0]), &h);
+    stat_out(r, h, s->x[1]);
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
+void fstatat_thunk(tsugiki_state* s, const Stub&) {
+    struct stat h;
+    int r = fstatat(int(s->x[0]), ptr<const char>(s->x[1]), &h, int(s->x[3]));
+    stat_out(r, h, s->x[2]);
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
+// arm64 aligns the data word, x86_64 packs it right after events
+struct GuestEpollEvent {
+    uint32_t events;
+    uint32_t pad;
+    uint64_t data;
+};
+static_assert(sizeof(GuestEpollEvent) == 16);
+
+void epoll_ctl_thunk(tsugiki_state* s, const Stub&) {
+    epoll_event h{};
+    if (s->x[3]) {
+        auto* g = ptr<GuestEpollEvent>(s->x[3]);
+        h.events = g->events;
+        h.data.u64 = g->data;
+    }
+    int r = epoll_ctl(int(s->x[0]), int(s->x[1]), int(s->x[2]), s->x[3] ? &h : nullptr);
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
+void epoll_out(int r, const std::vector<epoll_event>& h, uint64_t out) {
+    auto* g = ptr<GuestEpollEvent>(out);
+    for (int i = 0; i < r; ++i) {
+        g[i].events = h[size_t(i)].events;
+        g[i].pad = 0;
+        g[i].data = h[size_t(i)].data.u64;
+    }
+}
+
+void epoll_wait_thunk(tsugiki_state* s, const Stub&) {
+    std::vector<epoll_event> h(size_t(std::max(1, int(s->x[2]))));
+    int r = epoll_wait(int(s->x[0]), h.data(), int(s->x[2]), int(s->x[3]));
+    epoll_out(r, h, s->x[1]);
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
+void epoll_pwait_thunk(tsugiki_state* s, const Stub&) {
+    std::vector<epoll_event> h(size_t(std::max(1, int(s->x[2]))));
+    int r = epoll_pwait(int(s->x[0]), h.data(), int(s->x[2]), int(s->x[3]), ptr<const sigset_t>(s->x[4]));
+    epoll_out(r, h, s->x[1]);
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
+// ---- signals: guest handlers behind callback slots ----
+
+std::mutex signal_lock;
+// sigsegv stays ours, the guest's handler gets what we don't want
+struct sigaction guest_segv_action {};
+
+uint64_t wrap_handler(uint64_t handler) {
+    if (handler == uint64_t(SIG_DFL) || handler == uint64_t(SIG_IGN) || handler == uint64_t(SIG_ERR)) {
+        return handler;
+    }
+    return host_callback(handler, plain);
+}
+
+uint64_t unwrap_handler(uint64_t handler) {
+    uint64_t guest = callback_target(handler);
+    return guest ? guest : handler;
+}
+
+void sigaction_thunk(tsugiki_state* s, const Stub&) {
+    int sig = int(s->x[0]);
+    // the same struct on both 64-bit sides of bionic
+    auto* in = ptr<const struct sigaction>(s->x[1]);
+    auto* out = ptr<struct sigaction>(s->x[2]);
+    struct sigaction act {}, old {};
+    if (in) {
+        act = *in;
+        act.sa_handler = reinterpret_cast<sighandler_t>(wrap_handler(reinterpret_cast<uint64_t>(in->sa_handler)));
+    }
+    int r = 0;
+    if (sig == SIGSEGV) {
+        std::lock_guard guard(signal_lock);
+        old = guest_segv_action;
+        if (in) {
+            guest_segv_action = act;
+        }
+    } else {
+        r = sigaction(sig, in ? &act : nullptr, out ? &old : nullptr);
+    }
+    if (out && r == 0) {
+        old.sa_handler = reinterpret_cast<sighandler_t>(unwrap_handler(reinterpret_cast<uint64_t>(old.sa_handler)));
+        *out = old;
+    }
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
+void signal_thunk(tsugiki_state* s, const Stub&) {
+    int sig = int(s->x[0]);
+    uint64_t handler = wrap_handler(s->x[1]);
+    uint64_t previous;
+    if (sig == SIGSEGV) {
+        std::lock_guard guard(signal_lock);
+        previous = reinterpret_cast<uint64_t>(guest_segv_action.sa_handler);
+        guest_segv_action.sa_handler = reinterpret_cast<sighandler_t>(handler);
+        guest_segv_action.sa_flags = SA_RESTART;
+    } else {
+        previous = reinterpret_cast<uint64_t>(signal(sig, reinterpret_cast<sighandler_t>(handler)));
+    }
+    ret(s, s->x[30], unwrap_handler(previous));
+}
+
+}  // namespace
+
+// a sigsegv that isn't ours, for the guest's own handler if it set one
+bool guest_segv(int sig, siginfo_t* info, void* context) {
+    struct sigaction action;
+    {
+        std::lock_guard guard(signal_lock);
+        action = guest_segv_action;
+    }
+    uint64_t handler = reinterpret_cast<uint64_t>(action.sa_handler);
+    if (handler == uint64_t(SIG_DFL) || handler == uint64_t(SIG_IGN) || handler == 0) {
+        return false;
+    }
+    if (action.sa_flags & SA_SIGINFO) {
+        action.sa_sigaction(sig, info, context);
+    } else {
+        action.sa_handler(sig);
+    }
+    return true;
+}
+
+namespace {
 
 // an executable's _start lands here: run main, then exit like bionic does
 void libc_init_thunk(tsugiki_state* s, const Stub&) {
@@ -600,6 +802,21 @@ const Special specials[] = {
     {"dladdr", dladdr_thunk},
     {"__cxa_thread_atexit_impl", cxa_thread_atexit_thunk},
     {"pthread_atfork", pthread_atfork_thunk},
+    {"stat", stat_thunk},
+    {"stat64", stat_thunk},
+    {"lstat", lstat_thunk},
+    {"lstat64", lstat_thunk},
+    {"fstat", fstat_thunk},
+    {"fstat64", fstat_thunk},
+    {"fstatat", fstatat_thunk},
+    {"fstatat64", fstatat_thunk},
+    {"epoll_ctl", epoll_ctl_thunk},
+    {"epoll_wait", epoll_wait_thunk},
+    {"epoll_pwait", epoll_pwait_thunk},
+    {"sigaction", sigaction_thunk},
+    {"sigaction64", sigaction_thunk},
+    {"signal", signal_thunk},
+    {"bsd_signal", signal_thunk},
 };
 
 }  // namespace

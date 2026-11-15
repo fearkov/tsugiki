@@ -1,5 +1,6 @@
 // on the device: translated libs through the real loader, against the same c built for x86_64
 #include <dlfcn.h>
+#include <sys/stat.h>
 
 #include <cerrno>
 #include <chrono>
@@ -211,6 +212,13 @@ void bridge() {
     int tls = get<int (*)()>(lib, "bridge_tls")();
     std::printf("bridge_tls: %d\n", tls);
     CHECK(tls == 6);
+    struct stat host_stat;
+    stat("/system/bin/linker64", &host_stat);
+    long guest_size = get<long (*)(const char*)>(lib, "bridge_stat")("/system/bin/linker64");
+    std::printf("bridge_stat: %ld (host %lld)\n", guest_size, (long long)host_stat.st_size);
+    CHECK(guest_size == host_stat.st_size);
+    CHECK(get<int (*)()>(lib, "bridge_epoll")() == 1);
+    CHECK(get<int (*)()>(lib, "bridge_signal")() == 1);
     lldiv_t d = get<lldiv_t (*)(long long, long long)>(lib, "bridge_lldiv")(-1000000000007LL, 13);
     CHECK(d.quot == -1000000000007LL / 13 && d.rem == -1000000000007LL % 13);
 }
