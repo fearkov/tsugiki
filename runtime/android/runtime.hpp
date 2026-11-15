@@ -74,6 +74,9 @@ std::vector<GuestModule> guest_modules();
 // dladdr on a guest address, false if it isn't one
 bool guest_dladdr(uint64_t address, Dl_info* info);
 
+// whether a host address is in some lib's code
+bool host_code(void* address);
+
 // this thread's guest registers, made on first use
 tsugiki_state* guest_state();
 uint64_t int_arg(const tsugiki_state* s, int n);

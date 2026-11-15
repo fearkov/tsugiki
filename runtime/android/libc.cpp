@@ -458,12 +458,30 @@ void syscall_thunk(tsugiki_state* s, const Stub&) {
 
 // ---- dl*, aware of translated modules ----
 
+// an export wrapper of a translated lib, as glue_asm writes it:
+// movabs $vaddr, %r10; lea module(%rip), %r11; jmp entry. 0 if it isn't one
+uint64_t guest_of_wrapper(const void* host) {
+    const auto* b = static_cast<const uint8_t*>(host);
+    if (!host_code(const_cast<void*>(host)) || b[0] != 0x49 || b[1] != 0xba || b[10] != 0x4c || b[11] != 0x8d || b[12] != 0x1d) {
+        return 0;
+    }
+    uint64_t vaddr;
+    int32_t rel;
+    std::memcpy(&vaddr, b + 2, 8);
+    std::memcpy(&rel, b + 13, 4);
+    auto* module = reinterpret_cast<const tsugiki_module*>(b + 17 + rel);
+    return module->loaded ? *module->base + vaddr : 0;
+}
+
 void dlsym_thunk(tsugiki_state* s, const Stub&) {
     std::string name = ptr<char>(s->x[1]);
     uint64_t back = s->x[30];
+    // the host's lookup honours the handle; a translated lib answers with its wrapper
     void* host = dlsym(ptr<void>(s->x[0]), name.c_str());
     uint64_t result = 0;
-    if (uint64_t guest = lookup_guest(name)) {
+    if (uint64_t guest = host ? guest_of_wrapper(host) : 0) {
+        result = guest;
+    } else if (uint64_t guest = host ? 0 : lookup_guest(name)) {
         result = guest;
     } else if (uint64_t special = special_import(name)) {
         result = special;

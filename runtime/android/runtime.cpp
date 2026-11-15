@@ -207,8 +207,6 @@ bool guest_dladdr(uint64_t address, Dl_info* info) {
     return false;
 }
 
-namespace {
-
 // whether a host address is code, by its library's segments
 bool host_code(void* address) {
     struct Search {
@@ -230,6 +228,8 @@ bool host_code(void* address) {
         &search);
     return search.code;
 }
+
+namespace {
 
 bool host_code_cached(uint64_t address) {
     thread_local std::unordered_map<uint64_t, bool> known;

@@ -218,6 +218,7 @@ void bridge() {
     std::printf("bridge_stat: %ld (host %lld)\n", guest_size, (long long)host_stat.st_size);
     CHECK(guest_size == host_stat.st_size);
     CHECK(get<int (*)()>(lib, "bridge_epoll")() == 1);
+    CHECK(get<long (*)(int)>(lib, "bridge_dlsym")(20) == 6765);
     CHECK(get<int (*)()>(lib, "bridge_signal")() == 1);
     lldiv_t d = get<lldiv_t (*)(long long, long long)>(lib, "bridge_lldiv")(-1000000000007LL, 13);
     CHECK(d.quot == -1000000000007LL / 13 && d.rem == -1000000000007LL % 13);

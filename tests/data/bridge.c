@@ -3,6 +3,7 @@
 
 #define _BSD_SOURCE
 #include <SLES/OpenSLES.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -238,4 +239,13 @@ int bridge_signal(void) {
     struct sigaction back;
     sigaction(SIGUSR1, NULL, &back);
     return got_signal == SIGUSR1 && back.sa_handler == on_usr1 ? 1 : 0;
+}
+
+// dlopen of another translated lib, dlsym has to land on its guest function
+long bridge_dlsym(int n) {
+    void* h = dlopen("libkernels.so", RTLD_NOW);
+    if (!h) return -1;
+    unsigned long (*f)(unsigned long) = (unsigned long (*)(unsigned long))dlsym(h, "fib");
+    if (!f) return -2;
+    return (long)f((unsigned long)n);
 }
