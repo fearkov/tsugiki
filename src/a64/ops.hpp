@@ -116,4 +116,37 @@
     X(csel, "", "x x 0 11010100 xxxxx xxxx 0 x xxxxx xxxxx")                                \
     X(dp2, "", "x 0 0 11010110 xxxxx xxxxxx xxxxx xxxxx")                                   \
     X(dp1, "", "x 1 0 11010110 xxxxx xxxxxx xxxxx xxxxx")                                   \
-    X(dp3, "", "x 00 11011 xxx xxxxx x xxxxx xxxxx xxxxx")
+    X(dp3, "", "x 00 11011 xxx xxxxx x xxxxx xxxxx xxxxx")                                 \
+    /* scalar fp */                                                                         \
+    X(fp_fixed, "", "x 0 0 11110 xx 0 xx xxx xxxxxx xxxxx xxxxx")                           \
+    X(fp_int, "", "x 0 0 11110 xx 1 xx xxx 000000 xxxxx xxxxx")                             \
+    X(fp_1src, "", "0 0 0 11110 xx 1 xxxxxx 10000 xxxxx xxxxx")                             \
+    X(fp_compare, "", "0 0 0 11110 xx 1 xxxxx 00 1000 xxxxx xx000")                         \
+    X(fp_imm, "", "0 0 0 11110 xx 1 xxxxxxxx 100 00000 xxxxx")                              \
+    X(fp_ccmp, "", "0 0 0 11110 xx 1 xxxxx xxxx 01 xxxxx x xxxx")                           \
+    X(fp_2src, "", "0 0 0 11110 xx 1 xxxxx xxxx 10 xxxxx xxxxx")                            \
+    X(fp_csel, "", "0 0 0 11110 xx 1 xxxxx xxxx 11 xxxxx xxxxx")                            \
+    X(fp_3src, "", "0 0 0 11111 xx x xxxxx x xxxxx xxxxx xxxxx")                            \
+    /* advanced simd, crypto first */                                                       \
+    X(simd_aes, "", "01001110 xx 10100 xxxxx 10 xxxxx xxxxx")                               \
+    X(simd_sha3reg, "", "01011110 xx 0 xxxxx 0 xxx 00 xxxxx xxxxx")                         \
+    X(simd_sha2reg, "", "01011110 xx 10100 xxxxx 10 xxxxx xxxxx")                           \
+    X(simd_three_same, "", "0 x x 01110 xx 1 xxxxx xxxxx 1 xxxxx xxxxx")                    \
+    X(simd_three_different, "", "0 x x 01110 xx 1 xxxxx xxxx 00 xxxxx xxxxx")               \
+    X(simd_two_misc, "", "0 x x 01110 xx 10000 xxxxx 10 xxxxx xxxxx")                       \
+    X(simd_across, "", "0 x x 01110 xx 11000 xxxxx 10 xxxxx xxxxx")                         \
+    X(simd_copy, "", "0 x x 01110000 xxxxx 0 xxxx 1 xxxxx xxxxx")                           \
+    X(simd_three_same_extra, "", "0 x x 01110 xx 0 xxxxx 1 xxxx 1 xxxxx xxxxx")             \
+    X(simd_modified_imm, "", "0 x x 0111100000 xxx xxxx x 1 xxxxx xxxxx")                   \
+    X(simd_shift_imm, "", "0 x x 011110 xxxx xxx xxxxx 1 xxxxx xxxxx")                      \
+    X(simd_indexed, "", "0 x x 01111 xx x x xxxx xxxx x 0 xxxxx xxxxx")                     \
+    X(simd_extract, "", "0 x 101110 00 0 xxxxx 0 xxxx 0 xxxxx xxxxx")                       \
+    X(simd_permute, "", "0 x 001110 xx 0 xxxxx 0 xxx 10 xxxxx xxxxx")                       \
+    X(simd_table, "", "0 x 001110 00 0 xxxxx 0 xx x 00 xxxxx xxxxx")                        \
+    X(simd_scalar_three_same, "", "01 x 11110 xx 1 xxxxx xxxxx 1 xxxxx xxxxx")              \
+    X(simd_scalar_three_different, "", "01 x 11110 xx 1 xxxxx xxxx 00 xxxxx xxxxx")         \
+    X(simd_scalar_two_misc, "", "01 x 11110 xx 10000 xxxxx 10 xxxxx xxxxx")                 \
+    X(simd_scalar_pairwise, "", "01 x 11110 xx 11000 xxxxx 10 xxxxx xxxxx")                 \
+    X(simd_scalar_copy, "", "01 x 11110000 xxxxx 0 xxxx 1 xxxxx xxxxx")                     \
+    X(simd_scalar_shift_imm, "", "01 x 111110 xxxx xxx xxxxx 1 xxxxx xxxxx")                \
+    X(simd_scalar_indexed, "", "01 x 11111 xx x x xxxx xxxx x 0 xxxxx xxxxx")

@@ -110,6 +110,18 @@ void describe(const elf::Library& library) {
     }
     std::cout << "  functions: " << fdes.size() << " in eh_frame, " << with_lsda << " with landing pads, " << exported_outside
               << " exported ones without an fde\n";
+    // how much of it we can translate yet
+    auto program = lift::discover(library);
+    size_t total = 0, simd = 0, invalid = 0;
+    for (const auto& f : program.functions) {
+        for (const auto& in : f.code) {
+            ++total;
+            simd += in.op == a64::Op::simd;
+            invalid += in.op == a64::Op::invalid;
+        }
+    }
+    std::cout << "  instructions: " << total << " in " << program.functions.size() << " functions, " << simd << " fp/simd not decoded yet, "
+              << invalid << " invalid\n";
     if (library.init || !library.init_array.empty() || !library.preinit_array.empty()) {
         std::cout << "  init: " << library.init_array.size() << " in init_array" << (library.init ? ", DT_INIT" : "") << "\n";
     }

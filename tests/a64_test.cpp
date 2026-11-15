@@ -40,7 +40,7 @@ std::vector<std::string> llvm_mnemonics(const std::vector<uint32_t>& words) {
     std::string assemble = std::string(CLANG) + " --target=aarch64-linux-android -c " + source + " -o " + object;
     CHECK(std::system(assemble.c_str()) == 0);
     // a real phone's features, not every extension llvm knows
-    std::istringstream lines(run(std::string(LLVM_OBJDUMP) + " -d -M no-aliases --mcpu=cortex-x3 " + object));
+    std::istringstream lines(run(std::string(LLVM_OBJDUMP) + " -d -M no-aliases --mcpu=cortex-x3 --mattr=+aes,+sha2 " + object));
     std::vector<std::string> names;
     std::string line;
     while (std::getline(lines, line)) {
@@ -75,6 +75,7 @@ const std::map<std::string, std::set<std::string>> aliases = {
     {"movz", {"mov"}},
     {"orr", {"mov"}},
     {"prfm", {"rprfm"}},
+    {"dup", {"mov"}},
 };
 
 bool accepts(const std::string& ours, const std::string& theirs, a64::Op op) {
@@ -122,12 +123,9 @@ TEST(a64_decoder_matches_llvm) {
             words.push_back(e.value | (uint32_t(random()) & ~e.mask));
         }
     }
-    // plus plain random ones, minus fp/simd for now
-    for (int i = 0; i < 30000; ++i) {
-        uint32_t w = uint32_t(random());
-        if (a64::decode(w).op != a64::Op::simd) {
-            words.push_back(w);
-        }
+    // plus plain random ones
+    for (int i = 0; i < 40000; ++i) {
+        words.push_back(uint32_t(random()));
     }
     auto theirs = llvm_mnemonics(words);
     CHECK_EQ(theirs.size(), words.size());
@@ -143,13 +141,19 @@ TEST(a64_decoder_matches_llvm) {
         a64::Instruction in = a64::decode(words[i]);
         const std::string& name = theirs[i];
         bool ok;
-        if (in.valid()) {
+        if (in.op == a64::Op::simd) {
+            // fp16 vectors and such, not ours yet
+            ok = true;
+        } else if (in.valid()) {
             ok = accepts(a64::mnemonic(in), name, in.op);
             // newer than the cpu we ask llvm about: hbc, cssc
             std::string ours = a64::mnemonic(in);
             bool newer = ours.starts_with("bc.") || ours == "smax" || ours == "smin" || ours == "umax" || ours == "umin" ||
                          ours == "abs" || ours == "cnt" || ours == "ctz";
             ok = ok || (newer && name == "<unknown>");
+        } else if (in.op == a64::Op::simd) {
+            // fp16 vectors and such, not ours yet
+            ok = true;
         } else if ((words[i] >> 23) == 0b110101010) {
             // odd system encodings llvm still names, no app has them
             ok = true;

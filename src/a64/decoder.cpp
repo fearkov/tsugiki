@@ -1,5 +1,7 @@
 #include "a64/decoder.hpp"
 
+#include "a64/simd.hpp"
+
 #include <array>
 #include <cstring>
 #include <stdexcept>
@@ -441,20 +443,20 @@ Instruction decode(uint32_t raw) {
     Instruction in;
     in.raw = raw;
     unsigned op0 = (raw >> 25) & 15;
-    // fp and advanced simd data processing, later
-    if ((op0 & 7) == 7) {
-        in.op = Op::simd;
-        return in;
-    }
     for (const Pattern& p : buckets().lists[op0]) {
         if ((raw & p.mask) == p.value) {
             in.op = p.op;
-            if (!allocated(in)) {
+            bool ok = is_simd(in.op) ? !simd_name(in).empty() : allocated(in);
+            if (!ok) {
                 in.op = Op::invalid;
                 in.access = {};
             }
             return in;
         }
+    }
+    // fp/simd we don't decode yet, fp16 vectors and such
+    if ((op0 & 7) == 7) {
+        in.op = Op::simd;
     }
     return in;
 }
@@ -473,6 +475,9 @@ const char* condition(unsigned code) {
 }
 
 std::string mnemonic(const Instruction& in) {
+    if (is_simd(in.op)) {
+        return simd_name(in);
+    }
     const char* fixed = fixed_mnemonics[size_t(in.op)];
     if (fixed[0] != 0) {
         return fixed;
