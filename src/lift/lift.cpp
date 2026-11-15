@@ -11,6 +11,7 @@
 #include "lift/emit.hpp"
 #include "a64/simd.hpp"
 #include "lift/simd.hpp"
+#include "lift/tables.hpp"
 
 namespace tsugiki::lift {
 
@@ -284,6 +285,18 @@ private:
             return;
         }
         case Op::br:
+            if (auto table = function_.tables.find(pc_); table != function_.tables.end()) {
+                // a jump table, its targets stay in here
+                line("s->pc = " + get(in.rn(), true) + ";");
+                line("switch (s->pc - TB) {");
+                for (uint64_t target : table->second) {
+                    line("case " + hex(target) + ": goto L_" + name(target) + ";");
+                }
+                line("default: tsugiki_call(s); return;");
+                line("}");
+                return;
+            }
+            [[fallthrough]];
         case Op::braa:
         case Op::brab:
         case Op::braaz:
@@ -930,42 +943,83 @@ Program discover(const elf::Library& library) {
         }
     }
 
-    // code without an fde that something branches to, plt stubs mostly:
-    // decode until an unconditional jump or the next function
-    std::vector<uint64_t> pending;
+    // code without an fde: plt stubs, veneers, and functions only reached through pointers
+    // (jni tables, vtables, callbacks) when the lib has no unwind info for them
+    std::set<uint64_t> pending;
+    std::set<uint64_t> pointers;
     auto inside_known = [&](uint64_t address) {
         auto it = known.upper_bound(address);
         return it != known.begin() && address < std::prev(it)->second;
     };
+    auto code_address = [&](uint64_t address) { return (address & 3) == 0 && library.code(address); };
     auto scan = [&](uint64_t start, uint64_t end) {
         auto bytes = library.at(start, end - start);
         if (!bytes) {
             return;
         }
         Reader r(*bytes);
+        // last adrp per register, for adrp + add pairs taking a function's address
+        uint64_t page[32] = {};
+        bool has_page[32] = {};
         for (uint64_t pc = start; r.left() >= 4; pc += 4) {
             Instruction in = a64::decode(r.u32());
-            if (auto target = branch_target(in, pc); target && !inside_known(*target) && library.executable(*target) && (*target & 3) == 0) {
-                pending.push_back(*target);
+            if (auto target = branch_target(in, pc); target && code_address(*target) && !inside_known(*target)) {
+                pending.insert(*target);
+            }
+            if (in.op == Op::adrp) {
+                page[in.rd()] = (pc & ~uint64_t(0xfff)) + uint64_t(sign_extend((in.bits(23, 5) << 2) | in.bits(30, 29), 21) << 12);
+                has_page[in.rd()] = true;
+                continue;
+            }
+            if (in.op == Op::add_imm && in.sf() && !in.bit(22) && has_page[in.rn()]) {
+                uint64_t address = page[in.rn()] + in.bits(21, 10);
+                if (code_address(address)) {
+                    pointers.insert(address);
+                }
+            }
+            if (!in.access.bytes || in.access.load) {
+                has_page[in.rd()] = false;
             }
         }
     };
+    for (const elf::Relocation& x : library.relocations) {
+        uint64_t target = 0;
+        if (x.type == elf::relocation::relative) {
+            target = uint64_t(x.addend);
+        } else if ((x.type == elf::relocation::abs64 || x.type == elf::relocation::glob_dat) && x.symbol &&
+                   library.dynamic_symbols[x.symbol].defined()) {
+            target = library.dynamic_symbols[x.symbol].value + uint64_t(x.addend);
+        }
+        if (target && code_address(target)) {
+            pointers.insert(target);
+        }
+    }
     for (auto [start, end] : known) {
         scan(start, end);
     }
     // an executable's _start, no fde or symbol for it
-    if (library.entry() && library.executable(library.entry()) && !inside_known(library.entry())) {
-        pending.push_back(library.entry());
+    if (library.entry() && code_address(library.entry())) {
+        pending.insert(library.entry());
+    }
+    for (uint64_t p : pointers) {
+        if (!inside_known(p)) {
+            pending.insert(p);
+        }
     }
     while (!pending.empty()) {
-        uint64_t start = pending.back();
-        pending.pop_back();
+        uint64_t start = *pending.begin();
+        pending.erase(pending.begin());
         if (inside_known(start)) {
             continue;
         }
+        // up to the next function we know of or will look at
         auto next = known.upper_bound(start);
         uint64_t limit = next != known.end() ? next->first : library.loaded(start)->vaddr + library.loaded(start)->filesz;
-        uint64_t end = start;
+        if (auto later = pending.upper_bound(start); later != pending.end()) {
+            limit = std::min(limit, *later);
+        }
+        // linear, ends at a jump or return nothing jumps past
+        uint64_t end = start, furthest = start;
         while (end < limit) {
             auto word = library.at(end, 4);
             if (!word) {
@@ -974,9 +1028,27 @@ Program discover(const elf::Library& library) {
             uint32_t raw;
             std::memcpy(&raw, word->data(), 4);
             Instruction in = a64::decode(raw);
+            uint64_t pc = end;
             end += 4;
-            if (!in.valid() || in.op == Op::b || in.op == Op::br || in.op == Op::ret || in.op == Op::braa || in.op == Op::brab ||
-                in.op == Op::braaz || in.op == Op::brabz || in.op == Op::retaa || in.op == Op::retab) {
+            if (!in.valid()) {
+                break;
+            }
+            if (auto target = branch_target(in, pc); target && in.op != Op::bl && *target > pc && *target < limit) {
+                furthest = std::max(furthest, *target);
+            }
+            bool jumps = in.op == Op::b || in.op == Op::ret || in.op == Op::retaa || in.op == Op::retab || in.op == Op::braa ||
+                         in.op == Op::brab || in.op == Op::braaz || in.op == Op::brabz;
+            if (in.op == Op::br) {
+                // a jump table keeps going, its cases follow
+                auto before = library.at(pc - 4, 4);
+                uint32_t prev = 0;
+                if (before) {
+                    std::memcpy(&prev, before->data(), 4);
+                }
+                Op op = a64::decode(prev).op;
+                jumps = op != Op::addsub_shifted && op != Op::addsub_extended;
+            }
+            if (jumps && furthest < end) {
                 break;
             }
         }
@@ -1006,9 +1078,25 @@ Program discover(const elf::Library& library) {
             if (is_call(f.code[i]) && pc + 4 < f.end) {
                 f.entries.insert(pc + 4);
             }
+            if (f.code[i].op == Op::br) {
+                if (auto targets = jump_table(library, f, i); !targets.empty()) {
+                    f.labels.insert(targets.begin(), targets.end());
+                    f.tables[pc] = std::move(targets);
+                }
+            }
         }
         program.starts[start] = program.functions.size();
         program.functions.push_back(std::move(f));
+    }
+    // code pointers into the middle of a function, labels as values and such
+    for (uint64_t p : pointers) {
+        auto it = program.starts.upper_bound(p);
+        if (it != program.starts.begin()) {
+            Function& g = program.functions[std::prev(it)->second];
+            if (p > g.start && p < g.end) {
+                g.entries.insert(p);
+            }
+        }
     }
     // branches into the middle of another function, like lld's a53 erratum veneers
     // jumping back: the dispatcher has to be able to come in there

@@ -125,6 +125,8 @@ public:
     // from an address to the end of its segment's file part
     std::optional<std::span<const uint8_t>> from(uint64_t address) const;
     bool executable(uint64_t address) const;
+    // in .text and such, not just the r-x segment, old linkers put .rodata in there too
+    bool code(uint64_t address) const;
 
     // a pointer slot with relocations applied at base 0
     // none if it points at an import
@@ -172,6 +174,8 @@ private:
     uint16_t shnum_ = 0;
     uint16_t shstrndx_ = 0;
     std::vector<Segment> segments_;
+    // executable sections, start and end, empty if there are no section headers
+    std::vector<std::pair<uint64_t, uint64_t>> code_sections_;
 
     uint64_t strtab_ = 0;
     uint64_t strsz_ = 0;

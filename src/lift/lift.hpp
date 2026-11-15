@@ -21,6 +21,8 @@ struct Function {
     std::set<uint64_t> labels;
     // where the dispatcher can come in: the start and every return point
     std::set<uint64_t> entries;
+    // br address -> where its jump table goes, all inside
+    std::map<uint64_t, std::vector<uint64_t>> tables;
 };
 
 struct Program {

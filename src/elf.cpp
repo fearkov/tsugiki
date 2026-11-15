@@ -196,6 +196,18 @@ bool Library::executable(uint64_t address) const {
     return s && s->executable();
 }
 
+bool Library::code(uint64_t address) const {
+    if (code_sections_.empty()) {
+        return executable(address);
+    }
+    for (auto [start, end] : code_sections_) {
+        if (address >= start && address < end) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void Library::read_sections() {
     if (shoff_ == 0 || shnum_ == 0) {
         return;
@@ -215,13 +227,17 @@ void Library::read_sections() {
         Section s;
         table.skip(4);
         s.type = table.u32();
-        table.skip(8);
+        uint64_t flags = table.u64();
         s.addr = table.u64();
         s.offset = table.u64();
         s.size = table.u64();
         s.link = table.u32();
         table.skip(4 + 8 + 8);
         sections.push_back(s);
+        // alloc + execinstr
+        if ((flags & 6) == 6 && s.size) {
+            code_sections_.emplace_back(s.addr, s.addr + s.size);
+        }
     }
     auto contents = [&](const Section& s) -> std::optional<std::span<const uint8_t>> {
         if (s.offset > bytes_.size() || bytes_.size() - s.offset < s.size) {

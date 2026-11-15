@@ -123,6 +123,27 @@ void describe(const elf::Library& library) {
     }
     std::cout << "  instructions: " << total << " in " << program.functions.size() << " functions, " << simd << " fp/simd not decoded yet, "
               << invalid << " invalid\n";
+    size_t brs = 0, jump_tables = 0, targets = 0;
+    std::vector<uint64_t> missed;
+    for (const auto& f : program.functions) {
+        for (size_t i = 0; i < f.code.size(); ++i) {
+            brs += f.code[i].op == a64::Op::br;
+            // shaped like a table but none found
+            if (f.code[i].op == a64::Op::br && i > 0 && !f.tables.contains(f.start + 4 * i) &&
+                (f.code[i - 1].op == a64::Op::addsub_shifted || f.code[i - 1].op == a64::Op::addsub_extended)) {
+                missed.push_back(f.start + 4 * i);
+            }
+        }
+        jump_tables += f.tables.size();
+        for (const auto& [_, t] : f.tables) {
+            targets += t.size();
+        }
+    }
+    std::cout << "  br: " << brs << ", " << jump_tables << " jump tables with " << targets << " targets";
+    if (!missed.empty()) {
+        std::cout << ", " << missed.size() << " look like tables but aren't, like " << hex(missed[0]);
+    }
+    std::cout << "\n";
     if (library.init || !library.init_array.empty() || !library.preinit_array.empty()) {
         std::cout << "  init: " << library.init_array.size() << " in init_array" << (library.init ? ", DT_INIT" : "") << "\n";
     }
