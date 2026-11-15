@@ -339,3 +339,11 @@ static inline unsigned __int128 ts_pmul64(uint64_t a, uint64_t b) {
     for (int i = 0; i < 64; ++i) if (b >> i & 1) r ^= (unsigned __int128)a << i;
     return r;
 }
+
+// every lane x, no arithmetic so -0.0 stays -0.0
+template <typename V, typename E>
+static inline V ts_splat(E x) {
+    V v;
+    for (unsigned i = 0; i < sizeof(V) / sizeof(E); ++i) v[i] = x;
+    return v;
+}

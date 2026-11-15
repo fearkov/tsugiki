@@ -27,7 +27,12 @@ struct Guest {
         image = load_image(*library, [](const std::string&) { return uint64_t(0); });
         *base = image.base;
         tsugiki_add_module(image.base, image.size, entries, count);
+        // bionic's tls slots, the stack guard in slot 5 like on arm64 and x86_64
+        tls[5] = 0x5ca1ab1e0ddba11ull;
+        state.tpidr = reinterpret_cast<uint64_t>(tls);
     }
+
+    uint64_t tls[16] = {};
 
     uint64_t address(const std::string& name) const {
         for (const tsugiki::elf::Symbol& s : library->dynamic_symbols) {

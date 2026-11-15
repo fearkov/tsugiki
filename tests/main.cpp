@@ -11,6 +11,8 @@ std::vector<test::Case>& test::cases() {
 
 // tsugiki_tests [part of a name]
 int main(int argc, char** argv) {
+    // unbuffered so a crash still shows how far it got
+    std::cout << std::unitbuf;
     std::string filter = argc > 1 ? argv[1] : "";
     int ran = 0, failed = 0;
     for (const test::Case& c : test::cases()) {

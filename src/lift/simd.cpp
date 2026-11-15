@@ -635,7 +635,7 @@ private:
         }
         switch (imm4) {
         case 0: return store(d, q, shuffle(reg(n, t), reg(n, t), std::vector<int>(16 >> size, int(index))));
-        case 1: return store(d, q, "(" + t + "){} + (" + e + ")" + get(n, true));
+        case 1: return store(d, q, "ts_splat<" + t + ", " + e + ">((" + e + ")" + get(n, true) + ")");
         case 3: return "{ " + t + " r = " + reg(d, t) + "; r[" + str(index) + "] = (" + e + ")" + get(n, true) + "; " + store(d, true, "r") + " }";
         case 5: return set(d, q, "(int64_t)(" + std::string(se[size]) + ")" + reg(n, t) + "[" + str(index) + "]");
         case 7: return set(d, q, "(uint64_t)" + reg(n, t) + "[" + str(index) + "]");
@@ -785,7 +785,7 @@ private:
             }
             std::string t = fv[lane], e = fe[lane];
             std::string a = reg(n, t), dd = reg(d, t);
-            std::string b = "((" + t + "){} + " + reg(m, t) + "[" + str(index) + "])";
+            std::string b = "ts_splat<" + t + ", " + e + ">(" + reg(m, t) + "[" + str(index) + "])";
             std::string v;
             if (op == "fmul") v = a + " * " + b;
             else if (op == "fmla") v = "__builtin_elementwise_fma(" + a + ", " + b + ", " + dd + ")";
@@ -799,12 +799,12 @@ private:
         }
         std::string t = sv[size], e = se[size], ut = uv[size];
         if (op == "mul" || op == "mla" || op == "mls") {
-            std::string a = reg(n, ut), dd = reg(d, ut), b = "((" + ut + "){} + " + reg(m, ut) + "[" + str(index) + "])";
+            std::string a = reg(n, ut), dd = reg(d, ut), b = "ts_splat<" + ut + ", " + std::string(ue[size]) + ">(" + reg(m, ut) + "[" + str(index) + "])";
             std::string v = op == "mul" ? a + " * " + b : op == "mla" ? dd + " + " + a + " * " + b : dd + " - " + a + " * " + b;
             return store(d, q, v);
         }
         if (op == "sqdmulh" || op == "sqrdmulh") {
-            std::string b = "((" + t + "){} + " + reg(m, t) + "[" + str(index) + "])";
+            std::string b = "ts_splat<" + t + ", " + e + ">(" + reg(m, t) + "[" + str(index) + "])";
             std::string v = "ts_vqdmulh<" + t + ", " + e + ", " + (op == "sqrdmulh" ? "true" : "false") + ">(" + reg(n, t) + ", " + b + ")";
             if (scalar) {
                 return "ts_wbits(s, " + str(d) + ", (uint64_t)(" + std::string(ue[size]) + ")((" + ut + ")(" + v + "))[0]);";

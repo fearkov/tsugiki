@@ -79,12 +79,32 @@ add_library(vectors_translated OBJECT ${VECTORS_TRANSLATED})
 target_include_directories(vectors_translated PRIVATE ${PROJECT_SOURCE_DIR}/runtime)
 target_compile_options(vectors_translated PRIVATE -O2 -mcx16 -w)
 
+# neon intrinsics, arm64 only, references in neon_test.cpp
+set(NEON_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/data/neon.c)
+set(NEON_LIBRARY ${SAMPLE_DIR}/libneon.so)
+set(NEON_TRANSLATED ${CMAKE_CURRENT_BINARY_DIR}/neon_translated.cpp)
+add_custom_command(
+    OUTPUT ${NEON_LIBRARY}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SAMPLE_DIR}
+    COMMAND ${CLANG} ${SAMPLE_FLAGS} -O2 -march=armv8-a+crypto -mno-outline-atomics -o ${NEON_LIBRARY} ${NEON_SOURCE}
+    DEPENDS ${NEON_SOURCE}
+    VERBATIM)
+add_custom_command(
+    OUTPUT ${NEON_TRANSLATED}
+    COMMAND tsugiki translate ${NEON_LIBRARY} neon ${NEON_TRANSLATED}
+    DEPENDS tsugiki ${NEON_LIBRARY}
+    VERBATIM)
+add_library(neon_translated OBJECT ${NEON_TRANSLATED})
+target_include_directories(neon_translated PRIVATE ${PROJECT_SOURCE_DIR}/runtime)
+target_compile_options(neon_translated PRIVATE -O2 -mcx16 -w)
+
 add_library(tsugiki_host_runtime STATIC ${PROJECT_SOURCE_DIR}/runtime/host.cpp ${PROJECT_SOURCE_DIR}/runtime/simd.cpp)
 target_include_directories(tsugiki_host_runtime PUBLIC ${PROJECT_SOURCE_DIR}/runtime)
 
-add_executable(tsugiki_tests main.cpp a64_test.cpp bytes_test.cpp elf_test.cpp translate_test.cpp vectors_test.cpp loader.cpp
+add_executable(tsugiki_tests main.cpp a64_test.cpp bytes_test.cpp elf_test.cpp translate_test.cpp vectors_test.cpp neon_test.cpp loader.cpp
     $<TARGET_OBJECTS:kernels_native> $<TARGET_OBJECTS:kernels_translated>
-    $<TARGET_OBJECTS:vectors_native> $<TARGET_OBJECTS:vectors_translated>)
+    $<TARGET_OBJECTS:vectors_native> $<TARGET_OBJECTS:vectors_translated>
+    $<TARGET_OBJECTS:neon_translated>)
 target_link_libraries(tsugiki_tests PRIVATE tsugiki_core tsugiki_host_runtime)
 target_compile_options(tsugiki_tests PRIVATE -Wall -Wextra)
 target_compile_definitions(tsugiki_tests PRIVATE
