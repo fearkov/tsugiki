@@ -1,4 +1,6 @@
 // the kernels translated from arm64 against the same c built natively
+#include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -146,4 +148,23 @@ TEST(translated_memory_kernels) {
         CHECK_EQ(g.call("atomics", {p(&cell_a), v}), native_atomics(&cell_b, v));
         CHECK_EQ(cell_a, cell_b);
     }
+}
+
+TEST(speed_against_native) {
+    Guest& g = guest();
+    auto time = [](auto&& f) {
+        auto start = std::chrono::steady_clock::now();
+        f();
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    };
+    uint64_t a = 0, b = 0;
+    double translated = time([&] { a = g.call("fib", {30}); });
+    double native = time([&] { b = native_fib(30); });
+    std::vector<uint8_t> bytes(1 << 20, 0x5a);
+    uint32_t c = 0, d = 0;
+    double crc_translated = time([&] { c = uint32_t(g.call("crc", {p(bytes.data()), bytes.size()})); });
+    double crc_native = time([&] { d = native_crc(bytes.data(), int(bytes.size())); });
+    CHECK_EQ(a, b);
+    CHECK_EQ(c, d);
+    std::printf("     fib(30) %.1f ms vs %.1f native, crc of 1 MiB %.1f ms vs %.1f native\n", translated, native, crc_translated, crc_native);
 }
