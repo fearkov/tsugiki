@@ -1,0 +1,5 @@
+build/
+*.apk
+/apks/
+compile_commands.json
+.cache/
