@@ -30,12 +30,15 @@ std::string compiler();
 // libtsugiki.so into dir
 void build_runtime(const std::string& dir);
 
+// TSUGIKI_JOBS or the cores, at most 8
+int default_jobs();
+
 // a translated lib into dir, libtsugiki.so already there, translated deps too
-void build_library(const std::string& path, const std::string& dir);
+void build_library(const std::string& path, const std::string& dir, int jobs);
 
 // an arm64 apk into an x86_64 one: libs translated, aligned, signed with our own key
 // force rebuilds an apk that already has x86_64 libs from its arm64 ones
-void build_apk(const std::string& in, const std::string& out, bool force);
+void build_apk(const std::string& in, const std::string& out, bool force, int jobs);
 
 // paths of libs, deps first
 std::vector<std::string> build_order(const std::vector<std::string>& paths);

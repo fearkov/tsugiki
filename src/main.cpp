@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -187,11 +189,11 @@ int translate(const std::string& path, const std::string& id, const std::string&
 }
 
 // x86_64 android libs from arm64 ones, plus libtsugiki.so
-int build(const std::vector<std::string>& paths, const std::string& dir) {
+int build(const std::vector<std::string>& paths, const std::string& dir, int jobs) {
     android::build_runtime(dir);
     for (const std::string& path : android::build_order(paths)) {
         std::cout << path << "\n" << std::flush;
-        android::build_library(path, dir);
+        android::build_library(path, dir, jobs);
     }
     return 0;
 }
@@ -199,8 +201,8 @@ int build(const std::vector<std::string>& paths, const std::string& dir) {
 void usage() {
     std::cerr << "usage: tsugiki info <file.apk | lib.so>...\n"
                  "       tsugiki translate <lib.so> <id> <out.cpp>\n"
-                 "       tsugiki build <lib.so>... -o <dir>\n"
-                 "       tsugiki apk [--force] <in.apk> -o <out.apk>\n";
+                 "       tsugiki build [-j n] <lib.so>... -o <dir>\n"
+                 "       tsugiki apk [-j n] [--force] <in.apk> -o <out.apk>\n";
 }
 
 }  // namespace
@@ -214,6 +216,14 @@ int main(int argc, char** argv) {
     try {
         std::string command = args[0];
         args.erase(args.begin());
+        int jobs = android::default_jobs();
+        for (size_t i = 0; i + 1 < args.size(); ++i) {
+            if (args[i] == "-j") {
+                jobs = std::max(1, std::atoi(args[i + 1].c_str()));
+                args.erase(args.begin() + long(i), args.begin() + long(i) + 2);
+                break;
+            }
+        }
         if (command == "info" && !args.empty()) {
             return info(args);
         }
@@ -226,14 +236,14 @@ int main(int argc, char** argv) {
                 args.erase(args.begin());
             }
             if (args.size() == 3 && args[1] == "-o") {
-                android::build_apk(args[0], args[2], force);
+                android::build_apk(args[0], args[2], force, jobs);
                 return 0;
             }
         }
         if (command == "build" && args.size() >= 3 && args[args.size() - 2] == "-o") {
             std::string dir = args.back();
             args.resize(args.size() - 2);
-            return build(args, dir);
+            return build(args, dir, jobs);
         }
         usage();
         return 2;

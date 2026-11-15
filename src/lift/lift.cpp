@@ -117,11 +117,11 @@ unsigned log2_bytes(unsigned bytes) {
 
 class Emitter {
 public:
-    Emitter(const Program& program, const Function& function, std::ostringstream& out)
-        : program_(program), function_(function), out_(out) {}
+    Emitter(const Program& program, const Function& function, std::ostringstream& out, const std::string& storage, std::set<uint64_t>& referenced)
+        : program_(program), function_(function), out_(out), storage_(storage), referenced_(referenced) {}
 
     void function() {
-        out_ << "static void f_" << name(function_.start) << "(tsugiki_state* __restrict s) {\n";
+        out_ << storage_ << "f_" << name(function_.start) << "(tsugiki_state* __restrict s) {\n";
         out_ << "    switch (s->pc - TB) {\n";
         for (uint64_t entry : function_.entries) {
             out_ << "    case " << hex(entry) << ": goto L_" << name(entry) << ";\n";
@@ -159,6 +159,7 @@ private:
             return "goto L_" + name(target) + ";";
         }
         if (program_.starts.contains(target)) {
+            referenced_.insert(target);
             return "{ s->pc = TB + " + hex(target) + "; f_" + name(target) + "(s); return; }";
         }
         return "{ s->pc = TB + " + hex(target) + "; return; }";
@@ -266,7 +267,12 @@ private:
             uint64_t target = *branch_target(in, pc_);
             line("s->x[30] = TB + " + hex(next_) + ";");
             line("s->pc = TB + " + hex(target) + ";");
-            call(program_.starts.contains(target) ? "f_" + name(target) + "(s);" : "tsugiki_call(s);");
+            if (program_.starts.contains(target)) {
+                referenced_.insert(target);
+                call("f_" + name(target) + "(s);");
+            } else {
+                call("tsugiki_call(s);");
+            }
             return;
         }
         case Op::b_cond:
@@ -902,6 +908,10 @@ private:
     const Program& program_;
     const Function& function_;
     std::ostringstream& out_;
+    // "static void " or hidden when split into parts
+    const std::string& storage_;
+    // functions this one calls or jumps to, they need declaring
+    std::set<uint64_t>& referenced_;
     uint64_t pc_ = 0;
     uint64_t next_ = 0;
 };
@@ -1126,36 +1136,83 @@ Program discover(const elf::Library& library) {
     return program;
 }
 
-std::string emit(const Program& program, const std::string& id) {
-    std::ostringstream out;
-    out << "// made by tsugiki, don't edit\n";
-    out << "#include \"tsugiki.h\"\n\n";
-    out << "extern \"C\" uint64_t tsugiki_base_" << id << ";\n";
-    out << "#define TB tsugiki_base_" << id << "\n\n";
-    out << "#pragma clang diagnostic ignored \"-Wunused-label\"\n\n";
-    for (const Function& f : program.functions) {
-        out << "static void f_" << name(f.start) << "(tsugiki_state* __restrict s);\n";
-    }
-    out << "\n";
-    for (const Function& f : program.functions) {
-        Emitter(program, f, out).function();
-    }
-    // the dispatcher's table, sorted by address
-    std::vector<std::pair<uint64_t, uint64_t>> entries;
-    for (const Function& f : program.functions) {
-        for (uint64_t entry : f.entries) {
-            entries.emplace_back(entry, f.start);
+std::vector<std::string> emit_parts(const Program& program, const std::string& id, size_t per_part) {
+    // address order, about per_part instructions each
+    std::vector<std::vector<size_t>> groups;
+    size_t size = 0;
+    for (size_t i = 0; i < program.functions.size(); ++i) {
+        if (groups.empty() || size >= per_part) {
+            groups.emplace_back();
+            size = 0;
         }
+        groups.back().push_back(i);
+        size += program.functions[i].code.size();
     }
-    std::sort(entries.begin(), entries.end());
-    out << "extern \"C\" uint64_t tsugiki_base_" << id << " = 0;\n";
-    out << "extern \"C\" const tsugiki_entry tsugiki_entries_" << id << "[] = {\n";
-    for (auto [entry, function] : entries) {
-        out << "    {" << hex(entry) << ", f_" << name(function) << "},\n";
+    if (groups.empty()) {
+        groups.emplace_back();
     }
-    out << "};\n";
-    out << "extern \"C\" const uint64_t tsugiki_entry_count_" << id << " = " << entries.size() << ";\n";
-    return out.str();
+    // one part keeps everything static; split, they see each other across files, hidden from the outside
+    bool split = groups.size() > 1;
+    std::string storage = split ? "__attribute__((visibility(\"hidden\"))) void " : "static void ";
+    std::string space = "tsugiki_" + id;
+    std::vector<std::string> parts;
+    for (size_t p = 0; p < groups.size(); ++p) {
+        std::ostringstream body;
+        std::set<uint64_t> declare;
+        for (size_t i : groups[p]) {
+            Emitter(program, program.functions[i], body, storage, declare).function();
+        }
+        if (p == 0) {
+            // the table below needs every one of them
+            for (const Function& f : program.functions) {
+                declare.insert(f.start);
+            }
+        } else {
+            for (size_t i : groups[p]) {
+                declare.insert(program.functions[i].start);
+            }
+        }
+        std::ostringstream out;
+        out << "// made by tsugiki, don't edit\n";
+        out << "#include \"tsugiki.h\"\n\n";
+        out << "extern \"C\" uint64_t tsugiki_base_" << id << ";\n";
+        out << "#define TB tsugiki_base_" << id << "\n\n";
+        out << "#pragma clang diagnostic ignored \"-Wunused-label\"\n\n";
+        if (split) {
+            out << "namespace " << space << " {\n\n";
+        }
+        for (uint64_t start : declare) {
+            out << storage << "f_" << name(start) << "(tsugiki_state* __restrict s);\n";
+        }
+        out << "\n" << body.str();
+        if (split) {
+            out << "}  // namespace " << space << "\n\n";
+        }
+        if (p == 0) {
+            // the dispatcher's table, sorted by address
+            std::vector<std::pair<uint64_t, uint64_t>> entries;
+            for (const Function& f : program.functions) {
+                for (uint64_t entry : f.entries) {
+                    entries.emplace_back(entry, f.start);
+                }
+            }
+            std::sort(entries.begin(), entries.end());
+            std::string prefix = split ? space + "::f_" : "f_";
+            out << "extern \"C\" uint64_t tsugiki_base_" << id << " = 0;\n";
+            out << "extern \"C\" const tsugiki_entry tsugiki_entries_" << id << "[] = {\n";
+            for (auto [entry, function] : entries) {
+                out << "    {" << hex(entry) << ", " << prefix << name(function) << "},\n";
+            }
+            out << "};\n";
+            out << "extern \"C\" const uint64_t tsugiki_entry_count_" << id << " = " << entries.size() << ";\n";
+        }
+        parts.push_back(out.str());
+    }
+    return parts;
+}
+
+std::string emit(const Program& program, const std::string& id) {
+    return emit_parts(program, id, SIZE_MAX)[0];
 }
 
 }  // namespace tsugiki::lift

@@ -1,12 +1,15 @@
 #include "android.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <set>
+#include <thread>
 
 #include <zip.h>
 
@@ -185,7 +188,15 @@ bool is_executable(const elf::Library& library) {
     return library.segment(elf::segment::interp).has_value();
 }
 
-void build_library(const std::string& path, const std::string& dir) {
+int default_jobs() {
+    if (const char* jobs = std::getenv("TSUGIKI_JOBS")) {
+        return std::max(1, std::atoi(jobs));
+    }
+    // about 200 MB a part, keep it modest
+    return int(std::clamp(std::thread::hardware_concurrency(), 1u, 8u));
+}
+
+void build_library(const std::string& path, const std::string& dir, int jobs) {
     fs::path work = fs::path(dir) / "work";
     fs::create_directories(work);
     elf::Library library = read_library(path);
@@ -197,8 +208,42 @@ void build_library(const std::string& path, const std::string& dir) {
     fs::copy_file(path, image, fs::copy_options::overwrite_existing);
 
     auto program = lift::discover(library);
-    write_text(base.string() + ".cpp", lift::emit(program, id) + module_cpp(id, soname, executable));
+    // about 30k instructions a file, each a few seconds, built side by side
+    auto parts = lift::emit_parts(program, id, 30000);
+    parts[0] += module_cpp(id, soname, executable);
     write_text(base.string() + "_glue.S", glue_asm(library, id, fs::absolute(image).string(), executable));
+
+    std::string runtime = std::string(TSUGIKI_SOURCE_DIR) + "/runtime";
+    std::vector<std::string> commands, objects;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        std::string source = base.string() + "_" + std::to_string(i) + ".cpp";
+        std::string object = base.string() + "_" + std::to_string(i) + ".o";
+        write_text(source, parts[i]);
+        commands.push_back(compiler() + " -std=c++20 -O2 -w -mcx16 -fPIC -I" + quote(runtime) + " -c " + quote(source) + " -o " + quote(object));
+        objects.push_back(object);
+    }
+    std::atomic<size_t> next{0};
+    std::mutex failure_lock;
+    std::string failure;
+    std::vector<std::thread> workers;
+    for (int w = 0; w < std::max(1, jobs) && size_t(w) < commands.size(); ++w) {
+        workers.emplace_back([&] {
+            for (size_t i; (i = next++) < commands.size();) {
+                try {
+                    run(commands[i]);
+                } catch (const std::exception& e) {
+                    std::lock_guard guard(failure_lock);
+                    failure = e.what();
+                }
+            }
+        });
+    }
+    for (auto& w : workers) {
+        w.join();
+    }
+    if (!failure.empty()) {
+        throw Error(failure);
+    }
 
     std::string links;
     for (const std::string& needed : library.needed) {
@@ -212,9 +257,11 @@ void build_library(const std::string& path, const std::string& dir) {
             links += " " + quote((fs::path(dir) / needed).string());
         }
     }
-    std::string runtime = std::string(TSUGIKI_SOURCE_DIR) + "/runtime";
-    std::string common = compiler() + " -std=c++20 -O2 -w -mcx16 -I" + quote(runtime) + " " + quote(base.string() + ".cpp") + " " +
-                         quote(base.string() + "_glue.S");
+    std::string inputs;
+    for (const std::string& object : objects) {
+        inputs += " " + quote(object);
+    }
+    std::string common = compiler() + inputs + " " + quote(base.string() + "_glue.S");
     std::string out = quote((fs::path(dir) / soname).string());
     if (executable) {
         // its own process: libtsugiki.so sits next to it
@@ -318,7 +365,7 @@ void check_zip(int error, const std::string& what) {
 
 }  // namespace
 
-void build_apk(const std::string& in, const std::string& out, bool force) {
+void build_apk(const std::string& in, const std::string& out, bool force, int jobs) {
     fs::path work = fs::path(out).replace_extension(".work");
     fs::create_directories(work / "arm64");
     std::vector<std::string> paths;
@@ -343,7 +390,7 @@ void build_apk(const std::string& in, const std::string& out, bool force) {
     for (const std::string& path : build_order(paths)) {
         std::printf("%s\n", fs::path(path).filename().c_str());
         std::fflush(stdout);
-        build_library(path, libs.string());
+        build_library(path, libs.string(), jobs);
     }
 
     // the same apk, every lib dir swapped for ours, stored so they load in place

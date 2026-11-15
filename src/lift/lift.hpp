@@ -36,4 +36,8 @@ Program discover(const elf::Library& library);
 // c++ for the whole library, id goes into the exported names
 std::string emit(const Program& program, const std::string& id);
 
+// the same as several files of about per_part instructions, for parallel builds;
+// the first one has the dispatcher's table
+std::vector<std::string> emit_parts(const Program& program, const std::string& id, size_t per_part);
+
 }  // namespace tsugiki::lift
