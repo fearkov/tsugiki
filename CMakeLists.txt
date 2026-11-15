@@ -13,6 +13,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
 
 add_library(tsugiki_core STATIC
+    src/a64/decoder.cpp
     src/apk.cpp
     src/eh_frame.cpp
     src/elf.cpp

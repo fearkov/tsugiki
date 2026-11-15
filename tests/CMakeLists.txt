@@ -2,6 +2,7 @@
 # same code, every relocation packing android's linker reads
 find_program(CLANG NAMES clang)
 find_program(LLVM_READELF NAMES llvm-readelf)
+find_program(LLVM_OBJDUMP NAMES llvm-objdump)
 if(NOT CLANG)
     message(WARNING "no clang, skipping the tests")
     return()
@@ -34,11 +35,13 @@ foreach(variant IN LISTS VARIANTS)
 endforeach()
 add_custom_target(samples DEPENDS ${SAMPLES})
 
-add_executable(tsugiki_tests main.cpp bytes_test.cpp elf_test.cpp)
+add_executable(tsugiki_tests main.cpp a64_test.cpp bytes_test.cpp elf_test.cpp)
 target_link_libraries(tsugiki_tests PRIVATE tsugiki_core)
 target_compile_options(tsugiki_tests PRIVATE -Wall -Wextra)
 target_compile_definitions(tsugiki_tests PRIVATE
     SAMPLE_DIR="${SAMPLE_DIR}"
-    LLVM_READELF="${LLVM_READELF}")
+    CLANG="${CLANG}"
+    LLVM_READELF="${LLVM_READELF}"
+    LLVM_OBJDUMP="${LLVM_OBJDUMP}")
 add_dependencies(tsugiki_tests samples)
 add_test(NAME tsugiki_tests COMMAND tsugiki_tests)
