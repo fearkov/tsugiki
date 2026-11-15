@@ -35,8 +35,33 @@ foreach(variant IN LISTS VARIANTS)
 endforeach()
 add_custom_target(samples DEPENDS ${SAMPLES})
 
-add_executable(tsugiki_tests main.cpp a64_test.cpp bytes_test.cpp elf_test.cpp)
-target_link_libraries(tsugiki_tests PRIVATE tsugiki_core)
+# integer kernels: arm64 translated vs the same c built natively
+set(KERNELS_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/data/kernels.c)
+set(KERNELS_LIBRARY ${SAMPLE_DIR}/libkernels.so)
+set(KERNELS_TRANSLATED ${CMAKE_CURRENT_BINARY_DIR}/kernels_translated.cpp)
+add_custom_command(
+    OUTPUT ${KERNELS_LIBRARY}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SAMPLE_DIR}
+    COMMAND ${CLANG} ${SAMPLE_FLAGS} -mgeneral-regs-only -mno-outline-atomics -o ${KERNELS_LIBRARY} ${KERNELS_SOURCE}
+    DEPENDS ${KERNELS_SOURCE}
+    VERBATIM)
+add_custom_command(
+    OUTPUT ${KERNELS_TRANSLATED}
+    COMMAND tsugiki translate ${KERNELS_LIBRARY} kernels ${KERNELS_TRANSLATED}
+    DEPENDS tsugiki ${KERNELS_LIBRARY}
+    VERBATIM)
+add_library(kernels_native OBJECT data/kernels.c)
+target_compile_definitions(kernels_native PRIVATE NATIVE)
+add_library(kernels_translated OBJECT ${KERNELS_TRANSLATED})
+target_include_directories(kernels_translated PRIVATE ${PROJECT_SOURCE_DIR}/runtime)
+target_compile_options(kernels_translated PRIVATE -O2 -mcx16 -w)
+
+add_library(tsugiki_host_runtime STATIC ${PROJECT_SOURCE_DIR}/runtime/host.cpp)
+target_include_directories(tsugiki_host_runtime PUBLIC ${PROJECT_SOURCE_DIR}/runtime)
+
+add_executable(tsugiki_tests main.cpp a64_test.cpp bytes_test.cpp elf_test.cpp translate_test.cpp loader.cpp
+    $<TARGET_OBJECTS:kernels_native> $<TARGET_OBJECTS:kernels_translated>)
+target_link_libraries(tsugiki_tests PRIVATE tsugiki_core tsugiki_host_runtime)
 target_compile_options(tsugiki_tests PRIVATE -Wall -Wextra)
 target_compile_definitions(tsugiki_tests PRIVATE
     SAMPLE_DIR="${SAMPLE_DIR}"

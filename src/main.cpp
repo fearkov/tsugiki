@@ -11,6 +11,7 @@
 #include "bytes.hpp"
 #include "eh_frame.hpp"
 #include "elf.hpp"
+#include "lift/lift.hpp"
 
 using namespace tsugiki;
 
@@ -135,8 +136,25 @@ int info(const std::vector<std::string>& paths) {
     return 0;
 }
 
+int translate(const std::string& path, const std::string& id, const std::string& out) {
+    elf::Library library(read_file(path), path);
+    auto program = lift::discover(library);
+    std::ofstream file(out);
+    file << lift::emit(program, id);
+    if (!file) {
+        throw Error(out + ": can't write");
+    }
+    size_t instructions = 0;
+    for (const auto& f : program.functions) {
+        instructions += f.code.size();
+    }
+    std::cout << path << ": " << program.functions.size() << " functions, " << instructions << " instructions\n";
+    return 0;
+}
+
 void usage() {
-    std::cerr << "usage: tsugiki info <file.apk | lib.so>...\n";
+    std::cerr << "usage: tsugiki info <file.apk | lib.so>...\n"
+                 "       tsugiki translate <lib.so> <id> <out.cpp>\n";
 }
 
 }  // namespace
@@ -152,6 +170,9 @@ int main(int argc, char** argv) {
         args.erase(args.begin());
         if (command == "info" && !args.empty()) {
             return info(args);
+        }
+        if (command == "translate" && args.size() == 3) {
+            return translate(args[0], args[1], args[2]);
         }
         usage();
         return 2;
