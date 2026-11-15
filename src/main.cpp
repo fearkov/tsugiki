@@ -191,10 +191,7 @@ int translate(const std::string& path, const std::string& id, const std::string&
 // x86_64 android libs from arm64 ones, plus libtsugiki.so
 int build(const std::vector<std::string>& paths, const std::string& dir, int jobs) {
     android::build_runtime(dir);
-    for (const std::string& path : android::build_order(paths)) {
-        std::cout << path << "\n" << std::flush;
-        android::build_library(path, dir, jobs);
-    }
+    android::build_libraries(paths, dir, jobs);
     return 0;
 }
 

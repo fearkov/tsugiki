@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -198,7 +199,16 @@ int default_jobs() {
     return int(std::clamp(std::thread::hardware_concurrency(), 1u, 8u));
 }
 
-void build_library(const std::string& path, const std::string& dir, int jobs) {
+namespace {
+
+// what's left to do for one lib once its sources are written
+struct Prepared {
+    std::vector<std::string> compiles;
+    std::string link;
+};
+
+// the c++ parts and glue of one lib, nothing if it's up to date
+std::optional<Prepared> prepare(const std::string& path, const std::string& dir, const std::set<std::string>& translated) {
     fs::path work = fs::path(dir) / "work";
     fs::create_directories(work);
     elf::Library library = read_library(path);
@@ -206,7 +216,7 @@ void build_library(const std::string& path, const std::string& dir, int jobs) {
     // like make: nothing newer than what we built last time, the translator and its headers included
     std::string source = TSUGIKI_SOURCE_DIR;
     if (!stale(fs::path(dir) / soname, {path, fs::read_symlink("/proc/self/exe").string(), source + "/runtime/tsugiki.h", source + "/runtime/tsugiki_simd.h"})) {
-        return;
+        return std::nullopt;
     }
     std::string id = library_id(soname);
     bool executable = is_executable(library);
@@ -215,20 +225,46 @@ void build_library(const std::string& path, const std::string& dir, int jobs) {
     fs::copy_file(path, image, fs::copy_options::overwrite_existing);
 
     auto program = lift::discover(library);
-    // about 30k instructions a file, each a few seconds, built side by side
+    // about 30k instructions a file, each a few seconds
     auto parts = lift::emit_parts(program, id, 30000);
     parts[0] += module_cpp(id, soname, executable);
     write_text(base.string() + "_glue.S", glue_asm(library, id, fs::absolute(image).string(), executable));
 
-    std::string runtime = std::string(TSUGIKI_SOURCE_DIR) + "/runtime";
-    std::vector<std::string> commands, objects;
+    Prepared p;
+    std::string runtime = source + "/runtime";
+    std::string inputs;
     for (size_t i = 0; i < parts.size(); ++i) {
-        std::string source = base.string() + "_" + std::to_string(i) + ".cpp";
+        std::string file = base.string() + "_" + std::to_string(i) + ".cpp";
         std::string object = base.string() + "_" + std::to_string(i) + ".o";
-        write_text(source, parts[i]);
-        commands.push_back(compiler() + " -std=c++20 -O2 -w -mcx16 -fPIC -I" + quote(runtime) + " -c " + quote(source) + " -o " + quote(object));
-        objects.push_back(object);
+        write_text(file, parts[i]);
+        p.compiles.push_back(compiler() + " -std=c++20 -O2 -w -mcx16 -fPIC -I" + quote(runtime) + " -c " + quote(file) + " -o " + quote(object));
+        inputs += " " + quote(object);
     }
+
+    std::string links;
+    for (const std::string& needed : library.needed) {
+        if (needed == "libc.so" || needed == "libstdc++.so") {
+            continue;
+        }
+        if (system_libs.contains(needed)) {
+            links += " -l" + needed.substr(3, needed.size() - 6);
+        } else if (translated.contains(needed) || fs::exists(fs::path(dir) / needed)) {
+            // another translated lib, linked before this one
+            links += " " + quote((fs::path(dir) / needed).string());
+        }
+    }
+    std::string common = compiler() + inputs + " " + quote(base.string() + "_glue.S");
+    std::string out = quote((fs::path(dir) / soname).string());
+    if (executable) {
+        // its own process: libtsugiki.so sits next to it
+        p.link = common + " -fPIE -L" + quote(dir) + " -ltsugiki" + links + " -nostdlib++ -Wl,-rpath,'$ORIGIN' -o " + out;
+    } else {
+        p.link = common + " -fPIC -shared -L" + quote(dir) + " -ltsugiki" + links + " -nostdlib++ -Wl,--no-undefined -Wl,-soname," + soname + " -o " + out;
+    }
+    return p;
+}
+
+void run_all(const std::vector<std::string>& commands, int jobs) {
     std::atomic<size_t> next{0};
     std::mutex failure_lock;
     std::string failure;
@@ -251,30 +287,30 @@ void build_library(const std::string& path, const std::string& dir, int jobs) {
     if (!failure.empty()) {
         throw Error(failure);
     }
+}
 
-    std::string links;
-    for (const std::string& needed : library.needed) {
-        if (needed == "libc.so" || needed == "libstdc++.so") {
+}  // namespace
+
+void build_libraries(const std::vector<std::string>& paths, const std::string& dir, int jobs) {
+    // every part of every lib in one pool, then the links in dependency order
+    std::vector<std::string> compiles, links;
+    std::set<std::string> translated;
+    for (const std::string& path : paths) {
+        translated.insert(soname_of(read_library(path), path));
+    }
+    for (const std::string& path : build_order(paths)) {
+        auto p = prepare(path, dir, translated);
+        if (!p) {
             continue;
         }
-        if (system_libs.contains(needed)) {
-            links += " -l" + needed.substr(3, needed.size() - 6);
-        } else if (fs::exists(fs::path(dir) / needed)) {
-            // another translated lib, built before this one
-            links += " " + quote((fs::path(dir) / needed).string());
-        }
+        std::printf("%s\n", fs::path(path).filename().c_str());
+        std::fflush(stdout);
+        compiles.insert(compiles.end(), p->compiles.begin(), p->compiles.end());
+        links.push_back(p->link);
     }
-    std::string inputs;
-    for (const std::string& object : objects) {
-        inputs += " " + quote(object);
-    }
-    std::string common = compiler() + inputs + " " + quote(base.string() + "_glue.S");
-    std::string out = quote((fs::path(dir) / soname).string());
-    if (executable) {
-        // its own process: libtsugiki.so sits next to it
-        run(common + " -fPIE -L" + quote(dir) + " -ltsugiki" + links + " -nostdlib++ -Wl,-rpath,'$ORIGIN' -o " + out);
-    } else {
-        run(common + " -fPIC -shared -L" + quote(dir) + " -ltsugiki" + links + " -nostdlib++ -Wl,--no-undefined -Wl,-soname," + soname + " -o " + out);
+    run_all(compiles, jobs);
+    for (const std::string& link : links) {
+        run(link);
     }
 }
 
@@ -398,11 +434,7 @@ void build_apk(const std::string& in, const std::string& out, bool force, int jo
     }
     fs::path libs = work / "x86_64";
     build_runtime(libs.string());
-    for (const std::string& path : build_order(paths)) {
-        std::printf("%s\n", fs::path(path).filename().c_str());
-        std::fflush(stdout);
-        build_library(path, libs.string(), jobs);
-    }
+    build_libraries(paths, libs.string(), jobs);
 
     // the same apk, every lib dir swapped for ours, stored so they load in place
     fs::path unsigned_apk = work / "unsigned.apk", aligned = work / "aligned.apk";
