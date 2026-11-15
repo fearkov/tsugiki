@@ -600,6 +600,16 @@ const char* scalar_indexed(const Instruction& in) {
     }
 }
 
+bool second_half(Op op, const char* name);
+
+}  // namespace
+
+bool has_second_half(Op op, const std::string& base) {
+    return second_half(op, base.c_str());
+}
+
+namespace {
+
 bool second_half(Op op, const char* name) {
     // narrowing, widening and long ops take a 2 with q
     static const char* const twos[] = {"saddl", "saddw", "ssubl", "ssubw", "addhn", "sabal", "subhn", "sabdl", "smlal", "sqdmlal", "smlsl", "sqdmlsl", "smull",

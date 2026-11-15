@@ -8,6 +8,9 @@
 
 #include "bytes.hpp"
 #include "eh_frame.hpp"
+#include "lift/emit.hpp"
+#include "a64/simd.hpp"
+#include "lift/simd.hpp"
 
 namespace tsugiki::lift {
 
@@ -15,11 +18,7 @@ namespace {
 
 using a64::Instruction;
 using a64::Op;
-
-int64_t sign_extend(uint64_t value, int bits) {
-    uint64_t sign = uint64_t(1) << (bits - 1);
-    return int64_t((value ^ sign) - sign);
-}
+using namespace text;
 
 // where a direct branch goes, none if it isn't one
 std::optional<uint64_t> branch_target(const Instruction& in, uint64_t pc) {
@@ -51,58 +50,6 @@ bool is_call(const Instruction& in) {
         return true;
     default:
         return false;
-    }
-}
-
-std::string hex(uint64_t value) {
-    char text[32];
-    std::snprintf(text, sizeof text, "0x%llxull", static_cast<unsigned long long>(value));
-    return text;
-}
-
-std::string name(uint64_t address) {
-    char text[32];
-    std::snprintf(text, sizeof text, "%llx", static_cast<unsigned long long>(address));
-    return text;
-}
-
-std::string x(int n) {
-    return "s->x[" + std::to_string(n) + "]";
-}
-
-// a register as a value, 31 is zr or sp
-std::string get(int n, bool wide, bool sp = false) {
-    if (n == 31 && !sp) {
-        return wide ? "(uint64_t)0" : "(uint32_t)0";
-    }
-    return wide ? x(n) : "(uint32_t)" + x(n);
-}
-
-// assignment, 31 drops the value unless it's sp, w zero-extends
-std::string set(int n, bool wide, const std::string& value, bool sp = false) {
-    if (n == 31 && !sp) {
-        return "(void)(" + value + ");";
-    }
-    return x(n) + " = " + (wide ? "(uint64_t)(" + value + ")" : "(uint64_t)(uint32_t)(" + value + ")") + ";";
-}
-
-std::string condition(unsigned code) {
-    switch (code & 15) {
-    case 0: return "s->zf";
-    case 1: return "!s->zf";
-    case 2: return "s->cf";
-    case 3: return "!s->cf";
-    case 4: return "s->nf";
-    case 5: return "!s->nf";
-    case 6: return "s->vf";
-    case 7: return "!s->vf";
-    case 8: return "(s->cf && !s->zf)";
-    case 9: return "!(s->cf && !s->zf)";
-    case 10: return "(s->nf == s->vf)";
-    case 11: return "(s->nf != s->vf)";
-    case 12: return "(!s->zf && s->nf == s->vf)";
-    case 13: return "!(!s->zf && s->nf == s->vf)";
-    default: return "1";
     }
 }
 
@@ -439,6 +386,14 @@ private:
         case Op::ldrab:
             memory(in);
             return;
+        case Op::simd_multiple:
+        case Op::simd_multiple_post:
+            structures(in);
+            return;
+        case Op::simd_single:
+        case Op::simd_single_post:
+            structure(in);
+            return;
         case Op::logical_shifted: {
             unsigned opc = in.bits(30, 29);
             std::string m = shifted(get(in.rm(), wide), in.bits(23, 22), in.bits(15, 10), wide);
@@ -528,6 +483,13 @@ private:
             trap(in, "invalid instruction");
             return;
         default:
+            if (a64::is_simd(in.op)) {
+                std::string code = simd(in, pc_);
+                if (!code.empty()) {
+                    line(code);
+                    return;
+                }
+            }
             trap(in, "not translated yet");
             return;
         }
@@ -746,6 +708,95 @@ private:
             return " ts_st64(" + address + ", " + v + ".lo); ts_st64(" + address + " + 8, " + v + ".hi);";
         }
         return " " + store(bytes, address, v + ".lo");
+    }
+
+    // post-index: an immediate as big as what moved, or xm
+    std::string post_index(const Instruction& in, unsigned moved) {
+        int m = in.rm();
+        std::string by = m == 31 ? std::to_string(moved) : x(m);
+        return " " + x(in.rn()) + " = a + " + by + ";";
+    }
+
+    // ld1..ld4 and st1..st4 of whole registers
+    void structures(const Instruction& in) {
+        unsigned opcode = in.bits(15, 12), size = in.bits(11, 10);
+        bool q = in.bit(30), load = in.bit(22);
+        int registers, interleave;
+        switch (opcode) {
+        case 0b0000: registers = 4, interleave = 4; break;
+        case 0b0010: registers = 4, interleave = 1; break;
+        case 0b0100: registers = 3, interleave = 3; break;
+        case 0b0110: registers = 3, interleave = 1; break;
+        case 0b0111: registers = 1, interleave = 1; break;
+        case 0b1000: registers = 2, interleave = 2; break;
+        default: registers = 2, interleave = 1; break;
+        }
+        unsigned esize = 1u << size, bytes = q ? 16 : 8, elements = bytes / esize;
+        int t = in.rt();
+        std::string code = "{ uint64_t a = " + get(in.rn(), true, true) + "; uint8_t* p = (uint8_t*)a;";
+        if (interleave == 1) {
+            for (int r = 0; r < registers; ++r) {
+                std::string v = "&s->v[" + std::to_string((t + r) & 31) + "]";
+                std::string at = "p + " + std::to_string(r * bytes);
+                code += load ? " memcpy(" + v + ", " + at + ", " + std::to_string(bytes) + ");" : " memcpy(" + at + ", " + v + ", " + std::to_string(bytes) + ");";
+            }
+        } else {
+            // element e of register r sits at (e * n + r) * esize
+            std::string regs = std::to_string(interleave), es = std::to_string(esize);
+            code += " for (unsigned e = 0; e < " + std::to_string(elements) + "; ++e) for (int r = 0; r < " + regs + "; ++r) ";
+            std::string lane = "(uint8_t*)&s->v[(" + std::to_string(t) + " + r) & 31] + e * " + es;
+            std::string mem = "p + (e * " + regs + " + r) * " + es;
+            code += load ? "memcpy(" + lane + ", " + mem + ", " + es + ");" : "memcpy(" + mem + ", " + lane + ", " + es + ");";
+        }
+        if (load && !q) {
+            for (int r = 0; r < registers; ++r) {
+                code += " s->v[" + std::to_string((t + r) & 31) + "].hi = 0;";
+            }
+        }
+        if (in.op == Op::simd_multiple_post) {
+            code += post_index(in, unsigned(registers) * bytes);
+        }
+        line(code + " }");
+    }
+
+    // ld1..ld4 and st1..st4 of one lane, and ld1r..ld4r
+    void structure(const Instruction& in) {
+        unsigned opcode = in.bits(15, 13), size = in.bits(11, 10);
+        bool q = in.bit(30), load = in.bit(22), sbit = in.bit(12);
+        unsigned count = ((opcode & 1) << 1 | in.bit(21)) + 1;
+        unsigned scale = opcode >> 1, index = 0;
+        bool replicate = scale == 3;
+        if (replicate) {
+            scale = size;
+        } else if (scale == 0) {
+            index = (q << 3) | (sbit << 2) | size;
+        } else if (scale == 1) {
+            index = (q << 2) | (sbit << 1) | (size >> 1);
+        } else if (size & 1) {
+            scale = 3, index = q;
+        } else {
+            index = (q << 1) | sbit;
+        }
+        unsigned esize = 1u << scale;
+        int t = in.rt();
+        std::string es = std::to_string(esize);
+        std::string code = "{ uint64_t a = " + get(in.rn(), true, true) + "; uint8_t* p = (uint8_t*)a;";
+        for (unsigned r = 0; r < count; ++r) {
+            std::string v = "s->v[" + std::to_string((t + int(r)) & 31) + "]";
+            std::string mem = "p + " + std::to_string(r * esize);
+            if (replicate) {
+                std::string type = "uint" + std::to_string(esize * 8) + "_t";
+                code += " { " + type + " e; memcpy(&e, " + mem + ", " + es + "); " + type + " all[16 / " + es + "]; for (unsigned i = 0; i < 16 / " + es +
+                        "; ++i) all[i] = e; memcpy(&" + v + ", all, 16);" + (q ? "" : " " + v + ".hi = 0;") + " }";
+            } else {
+                std::string lane = "(uint8_t*)&" + v + " + " + std::to_string(index * esize);
+                code += load ? " memcpy(" + lane + ", " + mem + ", " + es + ");" : " memcpy(" + mem + ", " + lane + ", " + es + ");";
+            }
+        }
+        if (in.op == Op::simd_single_post) {
+            code += post_index(in, count * esize);
+        }
+        line(code + " }");
     }
 
     void data2(const Instruction& in) {

@@ -19,6 +19,7 @@ add_library(tsugiki_core STATIC
     src/eh_frame.cpp
     src/elf.cpp
     src/lift/lift.cpp
+    src/lift/simd.cpp
 )
 target_include_directories(tsugiki_core PUBLIC src)
 target_link_libraries(tsugiki_core PUBLIC PkgConfig::LIBZIP)

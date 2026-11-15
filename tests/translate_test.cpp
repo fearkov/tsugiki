@@ -9,9 +9,7 @@
 #include <string>
 #include <vector>
 
-#include "elf.hpp"
-#include "host.hpp"
-#include "loader.hpp"
+#include "guest.hpp"
 #include "test.hpp"
 
 using namespace tsugiki;
@@ -45,38 +43,8 @@ uint64_t native_collatz(uint64_t);
 
 namespace {
 
-struct Guest {
-    std::unique_ptr<elf::Library> library;
-    Image image;
-    std::vector<uint64_t> stack = std::vector<uint64_t>(1 << 17);
-    tsugiki_state state{};
-
-    uint64_t address(const std::string& name) const {
-        for (const elf::Symbol& s : library->dynamic_symbols) {
-            if (s.name == name && s.defined()) {
-                return image.base + s.value;
-            }
-        }
-        throw test::Failure{"no guest function " + name};
-    }
-
-    uint64_t call(const std::string& name, std::initializer_list<uint64_t> args) {
-        state.x[31] = reinterpret_cast<uint64_t>(stack.data() + stack.size()) & ~uint64_t(15);
-        return tsugiki_run(&state, address(name), args);
-    }
-};
-
 Guest& guest() {
-    static Guest* g = [] {
-        auto* g = new Guest;
-        std::ifstream file(std::string(SAMPLE_DIR) + "/libkernels.so", std::ios::binary);
-        std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-        g->library = std::make_unique<elf::Library>(std::move(bytes), "libkernels.so");
-        g->image = load_image(*g->library, [](const std::string&) { return uint64_t(0); });
-        tsugiki_base_kernels = g->image.base;
-        tsugiki_add_module(g->image.base, g->image.size, tsugiki_entries_kernels, tsugiki_entry_count_kernels);
-        return g;
-    }();
+    static Guest* g = new Guest(std::string(SAMPLE_DIR) + "/libkernels.so", tsugiki_entries_kernels, tsugiki_entry_count_kernels, &tsugiki_base_kernels);
     return *g;
 }
 

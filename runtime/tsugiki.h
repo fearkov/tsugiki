@@ -167,3 +167,5 @@ template <typename T>
 static inline T ts_atomic_umin(T* p, T v) {
     return ts_atomic_pick(p, v, [](T a, T b) { return a < b; });
 }
+
+#include "tsugiki_simd.h"

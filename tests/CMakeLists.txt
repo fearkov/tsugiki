@@ -56,11 +56,35 @@ add_library(kernels_translated OBJECT ${KERNELS_TRANSLATED})
 target_include_directories(kernels_translated PRIVATE ${PROJECT_SOURCE_DIR}/runtime)
 target_compile_options(kernels_translated PRIVATE -O2 -mcx16 -w)
 
-add_library(tsugiki_host_runtime STATIC ${PROJECT_SOURCE_DIR}/runtime/host.cpp)
+# fp and vectorized loops: arm64 -O3 translated vs native
+set(VECTORS_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/data/vectors.c)
+set(VECTORS_LIBRARY ${SAMPLE_DIR}/libvectors.so)
+set(VECTORS_TRANSLATED ${CMAKE_CURRENT_BINARY_DIR}/vectors_translated.cpp)
+set(FP_FLAGS -O3 -ffp-contract=off -fno-math-errno)
+add_custom_command(
+    OUTPUT ${VECTORS_LIBRARY}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SAMPLE_DIR}
+    COMMAND ${CLANG} ${SAMPLE_FLAGS} ${FP_FLAGS} -mno-outline-atomics -o ${VECTORS_LIBRARY} ${VECTORS_SOURCE}
+    DEPENDS ${VECTORS_SOURCE}
+    VERBATIM)
+add_custom_command(
+    OUTPUT ${VECTORS_TRANSLATED}
+    COMMAND tsugiki translate ${VECTORS_LIBRARY} vectors ${VECTORS_TRANSLATED}
+    DEPENDS tsugiki ${VECTORS_LIBRARY}
+    VERBATIM)
+add_library(vectors_native OBJECT data/vectors.c)
+target_compile_definitions(vectors_native PRIVATE NATIVE)
+target_compile_options(vectors_native PRIVATE ${FP_FLAGS})
+add_library(vectors_translated OBJECT ${VECTORS_TRANSLATED})
+target_include_directories(vectors_translated PRIVATE ${PROJECT_SOURCE_DIR}/runtime)
+target_compile_options(vectors_translated PRIVATE -O2 -mcx16 -w)
+
+add_library(tsugiki_host_runtime STATIC ${PROJECT_SOURCE_DIR}/runtime/host.cpp ${PROJECT_SOURCE_DIR}/runtime/simd.cpp)
 target_include_directories(tsugiki_host_runtime PUBLIC ${PROJECT_SOURCE_DIR}/runtime)
 
-add_executable(tsugiki_tests main.cpp a64_test.cpp bytes_test.cpp elf_test.cpp translate_test.cpp loader.cpp
-    $<TARGET_OBJECTS:kernels_native> $<TARGET_OBJECTS:kernels_translated>)
+add_executable(tsugiki_tests main.cpp a64_test.cpp bytes_test.cpp elf_test.cpp translate_test.cpp vectors_test.cpp loader.cpp
+    $<TARGET_OBJECTS:kernels_native> $<TARGET_OBJECTS:kernels_translated>
+    $<TARGET_OBJECTS:vectors_native> $<TARGET_OBJECTS:vectors_translated>)
 target_link_libraries(tsugiki_tests PRIVATE tsugiki_core tsugiki_host_runtime)
 target_compile_options(tsugiki_tests PRIVATE -Wall -Wextra)
 target_compile_definitions(tsugiki_tests PRIVATE
