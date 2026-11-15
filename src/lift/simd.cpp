@@ -236,12 +236,12 @@ private:
     std::string fp_compare() {
         int size = ftype_size(in_.bits(23, 22));
         std::string b = in_.bit(3) ? "(" + std::string(fe[size]) + ")0" : fget(in_.rm(), size);
-        return "ts_fcmp(s, " + fget(in_.rn(), size) + ", " + b + ");";
+        return "ts_fcmp(&fl, " + fget(in_.rn(), size) + ", " + b + ");";
     }
 
     std::string fp_ccmp() {
         int size = ftype_size(in_.bits(23, 22));
-        return "if (" + condition(in_.bits(15, 12)) + ") ts_fcmp(s, " + fget(in_.rn(), size) + ", " + fget(in_.rm(), size) + "); else ts_nzcv(s, " +
+        return "if (" + condition(in_.bits(15, 12)) + ") ts_fcmp(&fl, " + fget(in_.rn(), size) + ", " + fget(in_.rm(), size) + "); else ts_nzcv(&fl, " +
                str(in_.bits(3, 0)) + ");";
     }
 

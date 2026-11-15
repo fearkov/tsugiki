@@ -86,7 +86,7 @@ static inline _Float16 ts_half(uint16_t b) { _Float16 f; memcpy(&f, &b, 2); retu
 
 // fcmp: unordered 0011, equal 0110, less 1000, greater 0010
 template <typename F>
-static inline void ts_fcmp(tsugiki_state* __restrict s, F a, F b) {
+static inline void ts_fcmp(tsugiki_flags* __restrict s, F a, F b) {
     if (a != a || b != b) {
         s->nf = 0, s->zf = 0, s->cf = 1, s->vf = 1;
     } else if (a == b) {

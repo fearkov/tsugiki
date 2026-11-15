@@ -72,6 +72,11 @@ void tsugiki_call(tsugiki_state* s) {
     if (code == nullptr) {
         tsugiki_trap(s, s->pc, 0, "nothing to run there");
     }
+    if (s->cache) {
+        uint64_t i = tsugiki_cache_slot(s->pc);
+        s->cache->pc[i] = s->pc;
+        s->cache->code[i] = code;
+    }
     code(s);
 }
 

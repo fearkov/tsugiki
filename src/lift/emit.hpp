@@ -46,20 +46,20 @@ inline std::string set(int n, bool wide, const std::string& value, bool sp = fal
 
 inline std::string condition(unsigned code) {
     switch (code & 15) {
-    case 0: return "s->zf";
-    case 1: return "!s->zf";
-    case 2: return "s->cf";
-    case 3: return "!s->cf";
-    case 4: return "s->nf";
-    case 5: return "!s->nf";
-    case 6: return "s->vf";
-    case 7: return "!s->vf";
-    case 8: return "(s->cf && !s->zf)";
-    case 9: return "!(s->cf && !s->zf)";
-    case 10: return "(s->nf == s->vf)";
-    case 11: return "(s->nf != s->vf)";
-    case 12: return "(!s->zf && s->nf == s->vf)";
-    case 13: return "!(!s->zf && s->nf == s->vf)";
+    case 0: return "fl.zf";
+    case 1: return "!fl.zf";
+    case 2: return "fl.cf";
+    case 3: return "!fl.cf";
+    case 4: return "fl.nf";
+    case 5: return "!fl.nf";
+    case 6: return "fl.vf";
+    case 7: return "!fl.vf";
+    case 8: return "(fl.cf && !fl.zf)";
+    case 9: return "!(fl.cf && !fl.zf)";
+    case 10: return "(fl.nf == fl.vf)";
+    case 11: return "(fl.nf != fl.vf)";
+    case 12: return "(!fl.zf && fl.nf == fl.vf)";
+    case 13: return "!(!fl.zf && fl.nf == fl.vf)";
     default: return "1";
     }
 }

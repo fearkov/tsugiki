@@ -14,6 +14,7 @@
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -319,6 +320,9 @@ Thread& thread() {
         t->state.x[31] = reinterpret_cast<uint64_t>(t->stack + guest_stack_size - 512);
         // bionic keeps the stack guard in tls slot 5 on both, so share the host's
         t->state.tpidr = thread_pointer();
+        // nothing cached yet, ~0 is never a pc
+        t->state.cache = static_cast<tsugiki_cache*>(std::malloc(sizeof(tsugiki_cache)));
+        std::fill(std::begin(t->state.cache->pc), std::end(t->state.cache->pc), ~uint64_t(0));
         current = t;
     }
     return *current;
@@ -735,6 +739,11 @@ extern "C" void tsugiki_call(tsugiki_state* s) {
         return;
     }
     tsugiki_code code = find(s->pc);
+    if (code && s->cache) {
+        uint64_t i = tsugiki_cache_slot(s->pc);
+        s->cache->pc[i] = s->pc;
+        s->cache->code[i] = code;
+    }
     if (code == nullptr) {
         // one of our callback slots handed back: straight to its guest function
         if (uint64_t guest = callback_target(s->pc)) {

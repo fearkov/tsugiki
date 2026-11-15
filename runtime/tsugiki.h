@@ -23,10 +23,23 @@ struct tsugiki_state {
     uint32_t excl_size;
     uint32_t excl;
     uint32_t fpcr, fpsr;
+    // this thread's dispatch cache, see tsugiki_dispatch
+    struct tsugiki_cache* cache;
     alignas(16) tsugiki_vreg v[32];
 };
 
 typedef void (*tsugiki_code)(tsugiki_state*);
+
+// guest pc -> translated code, direct mapped, one per thread so no locking
+#define TSUGIKI_CACHE 4096
+struct tsugiki_cache {
+    uint64_t pc[TSUGIKI_CACHE];
+    tsugiki_code code[TSUGIKI_CACHE];
+};
+
+static inline uint64_t tsugiki_cache_slot(uint64_t pc) {
+    return (pc >> 2) & (TSUGIKI_CACHE - 1);
+}
 
 struct tsugiki_entry {
     uint64_t address;
@@ -73,8 +86,23 @@ static inline void ts_st16(uint64_t a, uint16_t v) { memcpy((void*)a, &v, 2); }
 static inline void ts_st32(uint64_t a, uint32_t v) { memcpy((void*)a, &v, 4); }
 static inline void ts_st64(uint64_t a, uint64_t v) { memcpy((void*)a, &v, 8); }
 
-// flags
-static inline uint64_t ts_adds64(tsugiki_state* __restrict s, uint64_t a, uint64_t b, uint64_t carry) {
+// flags, kept in a local by translated code
+struct tsugiki_flags {
+    uint32_t nf, zf, cf, vf;
+};
+
+static inline tsugiki_flags ts_flags_in(const tsugiki_state* s) {
+    return {s->nf, s->zf, s->cf, s->vf};
+}
+
+static inline void ts_flags_out(tsugiki_state* s, tsugiki_flags f) {
+    s->nf = f.nf;
+    s->zf = f.zf;
+    s->cf = f.cf;
+    s->vf = f.vf;
+}
+
+static inline uint64_t ts_adds64(tsugiki_flags* __restrict s, uint64_t a, uint64_t b, uint64_t carry) {
     unsigned __int128 wide = (unsigned __int128)a + b + carry;
     uint64_t r = (uint64_t)wide;
     s->nf = r >> 63;
@@ -84,7 +112,7 @@ static inline uint64_t ts_adds64(tsugiki_state* __restrict s, uint64_t a, uint64
     return r;
 }
 
-static inline uint32_t ts_adds32(tsugiki_state* __restrict s, uint32_t a, uint32_t b, uint32_t carry) {
+static inline uint32_t ts_adds32(tsugiki_flags* __restrict s, uint32_t a, uint32_t b, uint32_t carry) {
     uint64_t wide = (uint64_t)a + b + carry;
     uint32_t r = (uint32_t)wide;
     s->nf = r >> 31;
@@ -95,24 +123,24 @@ static inline uint32_t ts_adds32(tsugiki_state* __restrict s, uint32_t a, uint32
 }
 
 // a - b is a + ~b + 1
-static inline uint64_t ts_subs64(tsugiki_state* __restrict s, uint64_t a, uint64_t b) { return ts_adds64(s, a, ~b, 1); }
-static inline uint32_t ts_subs32(tsugiki_state* __restrict s, uint32_t a, uint32_t b) { return ts_adds32(s, a, ~b, 1); }
+static inline uint64_t ts_subs64(tsugiki_flags* __restrict s, uint64_t a, uint64_t b) { return ts_adds64(s, a, ~b, 1); }
+static inline uint32_t ts_subs32(tsugiki_flags* __restrict s, uint32_t a, uint32_t b) { return ts_adds32(s, a, ~b, 1); }
 
-static inline void ts_nz64(tsugiki_state* __restrict s, uint64_t r) {
+static inline void ts_nz64(tsugiki_flags* __restrict s, uint64_t r) {
     s->nf = r >> 63;
     s->zf = r == 0;
     s->cf = 0;
     s->vf = 0;
 }
 
-static inline void ts_nz32(tsugiki_state* __restrict s, uint32_t r) {
+static inline void ts_nz32(tsugiki_flags* __restrict s, uint32_t r) {
     s->nf = r >> 31;
     s->zf = r == 0;
     s->cf = 0;
     s->vf = 0;
 }
 
-static inline void ts_nzcv(tsugiki_state* __restrict s, uint32_t nzcv) {
+static inline void ts_nzcv(tsugiki_flags* __restrict s, uint32_t nzcv) {
     s->nf = (nzcv >> 3) & 1;
     s->zf = (nzcv >> 2) & 1;
     s->cf = (nzcv >> 1) & 1;
@@ -187,3 +215,14 @@ static inline T ts_atomic_umin(T* p, T v) {
 }
 
 #include "tsugiki_simd.h"
+
+// jump to s->pc: the thread's cache first, the runtime's lookup when it misses
+static inline void tsugiki_dispatch(tsugiki_state* s) {
+    struct tsugiki_cache* c = s->cache;
+    uint64_t i = tsugiki_cache_slot(s->pc);
+    if (__builtin_expect(c->pc[i] == s->pc, 1)) {
+        c->code[i](s);
+    } else {
+        tsugiki_call(s);
+    }
+}

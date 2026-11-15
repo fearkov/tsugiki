@@ -122,7 +122,11 @@ public:
 
     void function() {
         out_ << storage_ << "f_" << name(function_.start) << "(tsugiki_state* __restrict s) {\n";
-        out_ << "    switch (s->pc - TB) {\n";
+        // the base never moves once loaded, a local saves reloading it after every call
+        out_ << "    const uint64_t tb = TB;\n";
+        // flags live in here; calls and returns don't keep them (aapcs64), so only jumps out write them back
+        out_ << "    tsugiki_flags fl = ts_flags_in(s);\n";
+        out_ << "    switch (s->pc - tb) {\n";
         for (uint64_t entry : function_.entries) {
             out_ << "    case " << hex(entry) << ": goto L_" << name(entry) << ";\n";
         }
@@ -139,7 +143,7 @@ public:
             instruction(in);
         }
         // ran off the end
-        out_ << "    s->pc = TB + " << hex(function_.end) << ";\n    return;\n}\n\n";
+        out_ << "    ts_flags_out(s, fl);\n    s->pc = tb + " << hex(function_.end) << ";\n    return;\n}\n\n";
     }
 
 private:
@@ -147,7 +151,7 @@ private:
 
     void trap(const Instruction& in, const char* why) {
         char text[128];
-        std::snprintf(text, sizeof text, "tsugiki_trap(s, TB + %s, 0x%08x, \"%s\");", hex(pc_).c_str(), in.raw, why);
+        std::snprintf(text, sizeof text, "tsugiki_trap(s, tb + %s, 0x%08x, \"%s\");", hex(pc_).c_str(), in.raw, why);
         line(text);
     }
 
@@ -160,14 +164,14 @@ private:
         }
         if (program_.starts.contains(target)) {
             referenced_.insert(target);
-            return "{ s->pc = TB + " + hex(target) + "; f_" + name(target) + "(s); return; }";
+            return "{ ts_flags_out(s, fl); s->pc = tb + " + hex(target) + "; f_" + name(target) + "(s); return; }";
         }
-        return "{ s->pc = TB + " + hex(target) + "; return; }";
+        return "{ ts_flags_out(s, fl); s->pc = tb + " + hex(target) + "; return; }";
     }
 
     void call(const std::string& how) {
         line(how);
-        line("if (s->pc != TB + " + hex(next_) + ") return;");
+        line("if (s->pc != tb + " + hex(next_) + ") return;");
     }
 
     void instruction(const Instruction& in) {
@@ -177,7 +181,7 @@ private:
         case Op::adrp: {
             int64_t immediate = sign_extend((in.bits(23, 5) << 2) | in.bits(30, 29), 21);
             uint64_t target = in.op == Op::adr ? pc_ + uint64_t(immediate) : (pc_ & ~uint64_t(0xfff)) + uint64_t(immediate << 12);
-            line(set(in.rd(), true, "TB + " + hex(target)));
+            line(set(in.rd(), true, "tb + " + hex(target)));
             return;
         }
         case Op::add_imm:
@@ -191,7 +195,7 @@ private:
                 line(set(in.rd(), wide, n + (sub ? " - " : " + ") + i, true));
             } else {
                 std::string w = wide ? "64" : "32";
-                std::string flags = sub ? "ts_subs" + w + "(s, " + n + ", " + i + ")" : "ts_adds" + w + "(s, " + n + ", " + i + ", 0)";
+                std::string flags = sub ? "ts_subs" + w + "(&fl, " + n + ", " + i + ")" : "ts_adds" + w + "(&fl, " + n + ", " + i + ", 0)";
                 line(set(in.rd(), wide, flags));
             }
             return;
@@ -206,7 +210,7 @@ private:
             const char* op = in.op == Op::orr_imm ? " | " : in.op == Op::eor_imm ? " ^ " : " & ";
             if (in.op == Op::ands_imm) {
                 std::string t = wide ? "uint64_t" : "uint32_t";
-                line("{ " + t + " r = " + n + op + imm + "; ts_nz" + (wide ? "64" : "32") + "(s, r); " + set(in.rd(), wide, "r") + " }");
+                line("{ " + t + " r = " + n + op + imm + "; ts_nz" + (wide ? "64" : "32") + "(&fl, r); " + set(in.rd(), wide, "r") + " }");
             } else {
                 line(set(in.rd(), wide, n + op + imm, true));
             }
@@ -265,13 +269,13 @@ private:
             return;
         case Op::bl: {
             uint64_t target = *branch_target(in, pc_);
-            line("s->x[30] = TB + " + hex(next_) + ";");
-            line("s->pc = TB + " + hex(target) + ";");
+            line("s->x[30] = tb + " + hex(next_) + ";");
+            line("s->pc = tb + " + hex(target) + ";");
             if (program_.starts.contains(target)) {
                 referenced_.insert(target);
                 call("f_" + name(target) + "(s);");
             } else {
-                call("tsugiki_call(s);");
+                call("tsugiki_dispatch(s);");
             }
             return;
         }
@@ -294,11 +298,11 @@ private:
             if (auto table = function_.tables.find(pc_); table != function_.tables.end()) {
                 // a jump table, its targets stay in here
                 line("s->pc = " + get(in.rn(), true) + ";");
-                line("switch (s->pc - TB) {");
+                line("switch (s->pc - tb) {");
                 for (uint64_t target : table->second) {
                     line("case " + hex(target) + ": goto L_" + name(target) + ";");
                 }
-                line("default: tsugiki_call(s); return;");
+                line("default: ts_flags_out(s, fl); tsugiki_dispatch(s); return;");
                 line("}");
                 return;
             }
@@ -308,8 +312,9 @@ private:
         case Op::braaz:
         case Op::brabz:
             // a tail call, plt stubs and such, the target returns for us
+            line("ts_flags_out(s, fl);");
             line("s->pc = " + get(in.rn(), true) + ";");
-            line("tsugiki_call(s);");
+            line("tsugiki_dispatch(s);");
             line("return;");
             return;
         case Op::ret:
@@ -324,8 +329,8 @@ private:
         case Op::blraaz:
         case Op::blrabz:
             line("s->pc = " + get(in.rn(), true) + ";");
-            line("s->x[30] = TB + " + hex(next_) + ";");
-            call("tsugiki_call(s);");
+            line("s->x[30] = tb + " + hex(next_) + ";");
+            call("tsugiki_dispatch(s);");
             return;
         case Op::svc:
             line("tsugiki_svc(s, " + std::to_string(in.bits(20, 5)) + ");");
@@ -423,7 +428,7 @@ private:
             const char* op = opc == 1 ? " | " : opc == 2 ? " ^ " : " & ";
             std::string t = wide ? "uint64_t" : "uint32_t";
             if (opc == 3) {
-                line("{ " + t + " r = " + n + op + "(" + t + ")(" + m + "); ts_nz" + (wide ? "64" : "32") + "(s, r); " + set(in.rd(), wide, "r") + " }");
+                line("{ " + t + " r = " + n + op + "(" + t + ")(" + m + "); ts_nz" + (wide ? "64" : "32") + "(&fl, r); " + set(in.rd(), wide, "r") + " }");
             } else {
                 line(set(in.rd(), wide, n + op + "(" + t + ")(" + m + ")"));
             }
@@ -438,7 +443,7 @@ private:
             std::string n = get(in.rn(), wide, extended_form);
             std::string w = wide ? "64" : "32";
             if (flags) {
-                std::string r = sub ? "ts_subs" + w + "(s, " + n + ", " + m + ")" : "ts_adds" + w + "(s, " + n + ", " + m + ", 0)";
+                std::string r = sub ? "ts_subs" + w + "(&fl, " + n + ", " + m + ")" : "ts_adds" + w + "(&fl, " + n + ", " + m + ", 0)";
                 line(set(in.rd(), wide, r));
             } else {
                 line(set(in.rd(), wide, n + (sub ? " - " : " + ") + m, extended_form));
@@ -451,9 +456,9 @@ private:
             std::string m = sub ? "(" + t + ")~" + get(in.rm(), wide) : get(in.rm(), wide);
             std::string n = get(in.rn(), wide);
             if (flags) {
-                line(set(in.rd(), wide, "ts_adds" + w + "(s, " + n + ", " + m + ", s->cf)"));
+                line(set(in.rd(), wide, "ts_adds" + w + "(&fl, " + n + ", " + m + ", fl.cf)"));
             } else {
-                line(set(in.rd(), wide, n + " + " + m + " + (" + t + ")s->cf"));
+                line(set(in.rd(), wide, n + " + " + m + " + (" + t + ")fl.cf"));
             }
             return;
         }
@@ -462,8 +467,8 @@ private:
             std::string w = wide ? "64" : "32", t = wide ? "uint64_t" : "uint32_t";
             std::string m = in.op == Op::ccmp_immediate ? "(" + t + ")" + std::to_string(in.bits(20, 16)) : get(in.rm(), wide);
             std::string n = get(in.rn(), wide);
-            std::string compare = in.bit(30) ? "(void)ts_subs" + w + "(s, " + n + ", " + m + ");" : "(void)ts_adds" + w + "(s, " + n + ", " + m + ", 0);";
-            line("if (" + condition(in.bits(15, 12)) + ") { " + compare + " } else { ts_nzcv(s, " + std::to_string(in.bits(3, 0)) + "); }");
+            std::string compare = in.bit(30) ? "(void)ts_subs" + w + "(&fl, " + n + ", " + m + ");" : "(void)ts_adds" + w + "(&fl, " + n + ", " + m + ", 0);";
+            line("if (" + condition(in.bits(15, 12)) + ") { " + compare + " } else { ts_nzcv(&fl, " + std::to_string(in.bits(3, 0)) + "); }");
             return;
         }
         case Op::csel: {
@@ -521,7 +526,7 @@ private:
         if (read) {
             switch (reg) {
             case tpidr: line(set(in.rt(), true, "s->tpidr")); return;
-            case nzcv: line(set(in.rt(), true, "((uint64_t)s->nf << 31) | ((uint64_t)s->zf << 30) | ((uint64_t)s->cf << 29) | ((uint64_t)s->vf << 28)")); return;
+            case nzcv: line(set(in.rt(), true, "((uint64_t)fl.nf << 31) | ((uint64_t)fl.zf << 30) | ((uint64_t)fl.cf << 29) | ((uint64_t)fl.vf << 28)")); return;
             case fpcr: line(set(in.rt(), true, "s->fpcr")); return;
             case fpsr: line(set(in.rt(), true, "s->fpsr")); return;
             default: line(set(in.rt(), true, "tsugiki_mrs(s, " + std::to_string(reg) + ")")); return;
@@ -530,7 +535,7 @@ private:
         std::string value = get(in.rt(), true);
         switch (reg) {
         case tpidr: line("s->tpidr = " + value + ";"); return;
-        case nzcv: line("ts_nzcv(s, (uint32_t)(" + value + " >> 28));"); return;
+        case nzcv: line("ts_nzcv(&fl, (uint32_t)(" + value + " >> 28));"); return;
         case fpcr: line("s->fpcr = (uint32_t)" + value + ";"); return;
         case fpsr: line("s->fpsr = (uint32_t)" + value + ";"); return;
         default: line("tsugiki_msr(s, " + std::to_string(reg) + ", " + value + ");"); return;
@@ -622,7 +627,7 @@ private:
         std::optional<std::string> writeback;
         switch (in.op) {
         case Op::ldr_literal:
-            address = "TB + " + hex(pc_ + uint64_t(sign_extend(in.bits(23, 5), 19) * 4));
+            address = "tb + " + hex(pc_ + uint64_t(sign_extend(in.bits(23, 5), 19) * 4));
             break;
         case Op::single_unsigned:
             address = base + " + " + hex(uint64_t(in.bits(21, 10)) << scale);

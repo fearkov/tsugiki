@@ -19,6 +19,15 @@ struct Guest {
     Image image;
     std::vector<uint64_t> stack = std::vector<uint64_t>(1 << 17);
     tsugiki_state state{};
+    std::unique_ptr<tsugiki_cache> cache = fresh_cache();
+
+    static std::unique_ptr<tsugiki_cache> fresh_cache() {
+        auto c = std::make_unique<tsugiki_cache>();
+        for (auto& pc : c->pc) {
+            pc = ~uint64_t(0);
+        }
+        return c;
+    }
 
     Guest(const std::string& path, const tsugiki_entry* entries, uint64_t count, uint64_t* base) {
         std::ifstream file(path, std::ios::binary);
@@ -30,6 +39,7 @@ struct Guest {
         // bionic's tls slots, the stack guard in slot 5 like on arm64 and x86_64
         tls[5] = 0x5ca1ab1e0ddba11ull;
         state.tpidr = reinterpret_cast<uint64_t>(tls);
+        state.cache = cache.get();
     }
 
     uint64_t tls[16] = {};
