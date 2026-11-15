@@ -1,6 +1,10 @@
 // runtime internals shared by its files
 #pragma once
 
+#include <dlfcn.h>
+
+#include <vector>
+
 #include <cstdint>
 #include <string>
 
@@ -45,6 +49,22 @@ uint64_t guest_vm(void* host_vm);
 void* host_env_of(uint64_t guest_env);
 
 // guest arg readers for thunks: the nth int or fp arg of a call, past x0..x7 and v0..v7
+// a plain callback slot's guest function, 0 if it isn't one
+uint64_t callback_target(uint64_t address);
+
+// a loaded guest lib, for dl_iterate_phdr
+struct GuestModule {
+    uint64_t base;
+    uint64_t size;
+    const char* soname;
+    // Elf64_Phdr, the same on both sides
+    const void* phdrs;
+    uint16_t phnum;
+};
+std::vector<GuestModule> guest_modules();
+// dladdr on a guest address, false if it isn't one
+bool guest_dladdr(uint64_t address, Dl_info* info);
+
 // this thread's guest registers, made on first use
 tsugiki_state* guest_state();
 uint64_t int_arg(const tsugiki_state* s, int n);

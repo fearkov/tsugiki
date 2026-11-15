@@ -123,10 +123,7 @@ std::string glue_asm(const elf::Library& library, const std::string& id, const s
         }
         char vaddr[32];
         std::snprintf(vaddr, sizeof vaddr, "0x%llx", static_cast<unsigned long long>(s.value));
-        out += "    .globl " + s.name + "\n";
-        if (s.bind == elf::symbol::weak) {
-            out += "    .weak " + s.name + "\n";
-        }
+        out += (s.bind == elf::symbol::weak ? "    .weak " : "    .globl ") + s.name + "\n";
         out += "    .type " + s.name + ", @function\n" + s.name + ":\n";
         out += std::string("    movabs $") + vaddr + ", %r10\n";
         out += "    lea tsugiki_module_" + id + "(%rip), %r11\n";

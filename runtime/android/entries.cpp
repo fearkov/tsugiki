@@ -53,6 +53,17 @@ uint64_t host_callback(uint64_t guest_function, int kind) {
     return reinterpret_cast<uint64_t>(tsugiki_callbacks + 16 * it->second);
 }
 
+// a plain callback slot's guest function, 0 if it isn't one
+uint64_t callback_target(uint64_t address) {
+    uint64_t begin = reinterpret_cast<uint64_t>(tsugiki_callbacks);
+    if (address - begin >= uint64_t(tsugiki_callbacks_end - tsugiki_callbacks) || (address - begin) % 16) {
+        return 0;
+    }
+    std::lock_guard guard(slot_lock);
+    size_t i = (address - begin) / 16;
+    return i < slots.size() && slots[i].kind == plain ? slots[i].guest : 0;
+}
+
 }  // namespace tsugiki::rt
 
 using namespace tsugiki::rt;
@@ -68,6 +79,10 @@ extern "C" uint64_t tsugiki_enter(Frame* f) {
         }
         function = slot.guest;
         kind = slot.kind;
+    } else if (kind == 4) {
+        // a raw guest pointer the host called, see on_segv
+        function = f->vaddr;
+        kind = plain;
     } else {
         tsugiki_load(f->module);
         function = *f->module->base + f->vaddr;

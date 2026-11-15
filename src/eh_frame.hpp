@@ -24,4 +24,7 @@ struct Fde {
 // all FDEs, sorted by start, empty if there's no PT_GNU_EH_FRAME
 std::vector<Fde> read(const elf::Library& library);
 
+// where an exception can land in that function, from its lsda's call sites
+std::vector<uint64_t> landing_pads(const elf::Library& library, const Fde& fde);
+
 }  // namespace tsugiki::eh_frame

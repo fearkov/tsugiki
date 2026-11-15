@@ -8,6 +8,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -16,6 +17,8 @@
 #include <unordered_map>
 
 #include "android/runtime.hpp"
+
+extern "C" int __cxa_thread_atexit_impl(void (*)(void*), void*, void*);
 
 extern "C" int __cxa_atexit(void (*)(void*), void*, void*);
 
@@ -492,6 +495,61 @@ void dlsym_thunk(tsugiki_state* s, const Stub&) {
     ret(s, back, result);
 }
 
+// guest libs first, so the guest's unwinder finds its own eh_frame, then the host's
+void dl_iterate_phdr_thunk(tsugiki_state* s, const Stub&) {
+    uint64_t back = s->x[30], callback = s->x[0], data = s->x[1];
+    static std::atomic<unsigned long long> adds{0};
+    int result = 0;
+    for (const GuestModule& m : guest_modules()) {
+        dl_phdr_info info{};
+        info.dlpi_addr = m.base;
+        info.dlpi_name = m.soname;
+        info.dlpi_phdr = static_cast<const Elf64_Phdr*>(m.phdrs);
+        info.dlpi_phnum = m.phnum;
+        info.dlpi_adds = adds.load();
+        Call call;
+        call.ints[0] = reinterpret_cast<uint64_t>(&info);
+        call.ints[1] = sizeof info;
+        call.ints[2] = data;
+        result = int(run_guest(callback, call));
+        if (result != 0) {
+            ret(s, back, uint64_t(int64_t(result)));
+            return;
+        }
+    }
+    struct Walk {
+        uint64_t callback, data;
+    } walk{callback, data};
+    result = dl_iterate_phdr(
+        [](dl_phdr_info* info, size_t size, void* p) {
+            auto* w = static_cast<Walk*>(p);
+            Call call;
+            call.ints[0] = reinterpret_cast<uint64_t>(info);
+            call.ints[1] = size;
+            call.ints[2] = w->data;
+            return int(run_guest(w->callback, call));
+        },
+        &walk);
+    ret(s, back, uint64_t(int64_t(result)));
+}
+
+void dladdr_thunk(tsugiki_state* s, const Stub&) {
+    auto* info = ptr<Dl_info>(s->x[1]);
+    int found = guest_dladdr(s->x[0], info) ? 1 : dladdr(ptr<void>(s->x[0]), info);
+    ret(s, s->x[30], uint64_t(found));
+}
+
+// thread_local destructors
+void cxa_thread_atexit_thunk(tsugiki_state* s, const Stub&) {
+    auto f = reinterpret_cast<void (*)(void*)>(host_callback(s->x[0], plain));
+    ret(s, s->x[30], uint64_t(int64_t(__cxa_thread_atexit_impl(f, ptr<void>(s->x[1]), ptr<void>(s->x[2])))));
+}
+
+void pthread_atfork_thunk(tsugiki_state* s, const Stub&) {
+    auto wrap = [](uint64_t f) { return f ? reinterpret_cast<void (*)()>(host_callback(f, plain)) : nullptr; };
+    ret(s, s->x[30], uint64_t(int64_t(pthread_atfork(wrap(s->x[0]), wrap(s->x[1]), wrap(s->x[2])))));
+}
+
 // an executable's _start lands here: run main, then exit like bionic does
 void libc_init_thunk(tsugiki_state* s, const Stub&) {
     auto* raw = ptr<uint64_t>(s->x[0]);
@@ -538,6 +596,10 @@ const Special specials[] = {
     {"syscall", syscall_thunk},
     {"dlsym", dlsym_thunk},
     {"__libc_init", libc_init_thunk},
+    {"dl_iterate_phdr", dl_iterate_phdr_thunk},
+    {"dladdr", dladdr_thunk},
+    {"__cxa_thread_atexit_impl", cxa_thread_atexit_thunk},
+    {"pthread_atfork", pthread_atfork_thunk},
 };
 
 }  // namespace

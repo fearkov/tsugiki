@@ -28,6 +28,12 @@ int64_t native_conversions(double, float, int64_t, uint32_t);
 void native_saxpy(float*, const float*, float, int);
 double native_dot(const double*, const double*, int);
 float native_matrix(const float*, const float*, float*);
+int native_cxx_catch(int);
+int native_cxx_destructors(int);
+int native_cxx_rethrow();
+double native_cxx_virtual(int);
+int native_cxx_containers(int, char*, int);
+int native_cxx_vector_at(int);
 }
 
 namespace {
@@ -195,6 +201,41 @@ void bridge() {
     std::printf("bridge_hwcap: %lx\n", get<unsigned long (*)()>(lib, "bridge_hwcap")());
     CHECK(get<int (*)()>(lib, "bridge_once")() == 1);
     CHECK(get<int (*)(const char*, const char*)>(lib, "bridge_strings")("hello ", "world") == 11 * 100 + 6);
+
+    n = get<int (*)(char*, int)>(lib, "bridge_funopen")(out, sizeof out);
+    std::printf("bridge_funopen: %s\n", out);
+    CHECK(n == 17 && std::strcmp(out, "cookie 42 jar 2.5") == 0);
+    int sl = get<int (*)()>(lib, "bridge_opensl")();
+    std::printf("bridge_opensl: %d\n", sl);
+    CHECK(sl == 0);
+    lldiv_t d = get<lldiv_t (*)(long long, long long)>(lib, "bridge_lldiv")(-1000000000007LL, 13);
+    CHECK(d.quot == -1000000000007LL / 13 && d.rem == -1000000000007LL % 13);
+}
+
+void cxx() {
+    void* lib = load("libcxx.so");
+    auto cxx_catch = get<int (*)(int)>(lib, "cxx_catch");
+    auto destructors = get<int (*)(int)>(lib, "cxx_destructors");
+    auto rethrow = get<int (*)()>(lib, "cxx_rethrow");
+    auto virtuals = get<double (*)(int)>(lib, "cxx_virtual");
+    auto containers = get<int (*)(int, char*, int)>(lib, "cxx_containers");
+    auto vector_at = get<int (*)(int)>(lib, "cxx_vector_at");
+    for (int depth : {0, 1, 5, 40}) {
+        CHECK(cxx_catch(depth) == native_cxx_catch(depth));
+    }
+    CHECK(destructors(10) == native_cxx_destructors(10));
+    CHECK(rethrow() == native_cxx_rethrow());
+    CHECK(same(virtuals(50), native_cxx_virtual(50)));
+    char a[128], b[128];
+    CHECK(containers(300, a, sizeof a) == native_cxx_containers(300, b, sizeof b));
+    CHECK(std::strcmp(a, b) == 0);
+    CHECK(vector_at(1) == 7 && vector_at(5) == -1);
+    // a lot of throwing, timed
+    int x = 0, y = 0;
+    double translated = ms([&] { for (int i = 0; i < 2000; ++i) x += cxx_catch(3); });
+    double native = ms([&] { for (int i = 0; i < 2000; ++i) y += native_cxx_catch(3); });
+    CHECK(x == y);
+    std::printf("cxx: %s, 2000 throws %.1f ms vs %.1f native\n", a, translated, native);
 }
 
 }  // namespace
@@ -205,6 +246,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "kernels") kernels();
     if (only.empty() || only == "vectors") vectors();
     if (only.empty() || only == "bridge") bridge();
+    if (only.empty() || only == "cxx") cxx();
     std::printf("%d checks, %d failed\n", checks, failures);
     return failures != 0;
 }

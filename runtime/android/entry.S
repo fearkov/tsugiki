@@ -44,6 +44,61 @@ ENTRY tsugiki_jni_entry, 1
 ENTRY tsugiki_jni_onload_entry, 2
 // r10 = callback slot
 ENTRY tsugiki_callback_entry, 3
+// r10 = guest address, the host jumped there through a plain pointer and faulted
+ENTRY tsugiki_raw_entry, 4
+
+// a host function with guest args: rdi = function, rsi = HostCall
+// HostCall: ints 0..47, fps 48..111, stack 112, count 120, rax 128, rdx 136, xmm0 144, xmm1 160
+    .globl tsugiki_host_call
+    .type tsugiki_host_call, @function
+tsugiki_host_call:
+    push %rbp
+    mov %rsp, %rbp
+    push %rbx
+    push %r12
+    mov %rsi, %rbx
+    mov %rdi, %r11
+    mov 120(%rbx), %rcx
+    lea 15(,%rcx,8), %rax
+    and $-16, %rax
+    sub %rax, %rsp
+    mov 112(%rbx), %rsi
+    xor %edx, %edx
+1:
+    cmp %rcx, %rdx
+    jae 2f
+    mov (%rsi,%rdx,8), %rax
+    mov %rax, (%rsp,%rdx,8)
+    inc %rdx
+    jmp 1b
+2:
+    movq 48(%rbx), %xmm0
+    movq 56(%rbx), %xmm1
+    movq 64(%rbx), %xmm2
+    movq 72(%rbx), %xmm3
+    movq 80(%rbx), %xmm4
+    movq 88(%rbx), %xmm5
+    movq 96(%rbx), %xmm6
+    movq 104(%rbx), %xmm7
+    mov 0(%rbx), %rdi
+    mov 8(%rbx), %rsi
+    mov 16(%rbx), %rdx
+    mov 24(%rbx), %rcx
+    mov 32(%rbx), %r8
+    mov 40(%rbx), %r9
+    // varargs callees want the vector register count in al
+    mov $8, %eax
+    call *%r11
+    mov %rax, 128(%rbx)
+    mov %rdx, 136(%rbx)
+    movdqu %xmm0, 144(%rbx)
+    movdqu %xmm1, 160(%rbx)
+    lea -16(%rbp), %rsp
+    pop %r12
+    pop %rbx
+    pop %rbp
+    ret
+    .size tsugiki_host_call, . - tsugiki_host_call
 
 // callback trampolines, 16 bytes each: slot in r10, then the entry
     .globl tsugiki_callbacks

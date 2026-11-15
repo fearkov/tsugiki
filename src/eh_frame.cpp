@@ -188,6 +188,43 @@ private:
 
 }  // namespace
 
+std::vector<uint64_t> landing_pads(const elf::Library& library, const Fde& fde) {
+    std::vector<uint64_t> pads;
+    if (!fde.lsda) {
+        return pads;
+    }
+    auto bytes = library.from(*fde.lsda);
+    if (!bytes) {
+        return pads;
+    }
+    // a broken table only costs us its pads
+    try {
+        Reader r(*bytes, *fde.lsda);
+        uint64_t start = fde.start;
+        uint8_t start_encoding = r.u8();
+        if (auto p = read_pointer(r, start_encoding, 0)) {
+            start = p->value;
+        }
+        if (r.u8() != pe_omit) {
+            r.uleb128();
+        }
+        uint8_t encoding = r.u8();
+        uint64_t length = r.uleb128();
+        uint64_t end = r.position() + length;
+        while (r.position() < end) {
+            read_pointer(r, encoding, 0);
+            read_pointer(r, encoding, 0);
+            auto pad = read_pointer(r, encoding, 0);
+            r.uleb128();
+            if (pad && pad->value) {
+                pads.push_back(start + pad->value);
+            }
+        }
+    } catch (const Error&) {
+    }
+    return pads;
+}
+
 std::vector<Fde> read(const elf::Library& library) {
     // TODO: .eh_frame without a hdr, via the section headers
     auto header = library.segment(elf::segment::gnu_eh_frame);

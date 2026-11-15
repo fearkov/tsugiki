@@ -4,12 +4,15 @@
 #include <android/log.h>
 #include <dlfcn.h>
 #include <link.h>
+#include <signal.h>
+#include <sys/ucontext.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cstdarg>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -18,6 +21,8 @@
 #include <vector>
 
 #include "elf.hpp"
+
+extern "C" char tsugiki_raw_entry[];
 
 namespace tsugiki::rt {
 
@@ -94,6 +99,8 @@ struct Loaded {
     uint64_t base = 0;
     uint64_t size = 0;
     std::unordered_map<std::string, uint64_t> exports;
+    // for dl_iterate_phdr, the guest's unwinder finds eh_frame through these
+    std::vector<Elf64_Phdr> phdrs;
 };
 
 struct Modules {
@@ -156,6 +163,49 @@ uint64_t lookup_guest(const std::string& name) {
     return guest_export(name);
 }
 
+std::vector<GuestModule> guest_modules() {
+    Modules& all = modules();
+    Loaded** list = all.list.load(std::memory_order_acquire);
+    size_t count = all.count.load(std::memory_order_acquire);
+    std::vector<GuestModule> out;
+    for (size_t i = 0; i < count; ++i) {
+        const Loaded* l = list[i];
+        out.push_back({l->base, l->size, l->module->soname, l->phdrs.data(), uint16_t(l->phdrs.size())});
+    }
+    return out;
+}
+
+bool guest_dladdr(uint64_t address, Dl_info* info) {
+    Modules& all = modules();
+    Loaded** list = all.list.load(std::memory_order_acquire);
+    size_t count = all.count.load(std::memory_order_acquire);
+    for (size_t i = 0; i < count; ++i) {
+        const Loaded* l = list[i];
+        if (address - l->base >= l->size) {
+            continue;
+        }
+        uint64_t offset = address - l->base;
+        info->dli_fname = l->module->soname;
+        info->dli_fbase = reinterpret_cast<void*>(l->base);
+        info->dli_sname = nullptr;
+        info->dli_saddr = nullptr;
+        // the closest symbol at or below it
+        const elf::Symbol* best = nullptr;
+        for (const elf::Symbol& sym : l->library->dynamic_symbols) {
+            if (sym.defined() && !sym.name.empty() && sym.value <= offset && (!best || sym.value > best->value) &&
+                (sym.size == 0 || offset < sym.value + sym.size)) {
+                best = &sym;
+            }
+        }
+        if (best) {
+            info->dli_sname = best->name.c_str();
+            info->dli_saddr = reinterpret_cast<void*>(l->base + best->value);
+        }
+        return true;
+    }
+    return false;
+}
+
 namespace {
 
 // whether a host address is code, by its library's segments
@@ -178,6 +228,15 @@ bool host_code(void* address) {
         },
         &search);
     return search.code;
+}
+
+bool host_code_cached(uint64_t address) {
+    thread_local std::unordered_map<uint64_t, bool> known;
+    auto it = known.find(address);
+    if (it == known.end()) {
+        it = known.emplace(address, host_code(reinterpret_cast<void*>(address))).first;
+    }
+    return it->second;
 }
 
 void missing_call(tsugiki_state* s, const Stub& stub) {
@@ -256,7 +315,8 @@ Thread& thread() {
         // a guard page at the bottom
         mprotect(stack, 4096, PROT_NONE);
         t->stack = static_cast<uint8_t*>(stack);
-        t->state.x[31] = reinterpret_cast<uint64_t>(t->stack + guest_stack_size);
+        // some room above, host calls read 16 stack words whether they're there or not
+        t->state.x[31] = reinterpret_cast<uint64_t>(t->stack + guest_stack_size - 512);
         // bionic keeps the stack guard in tls slot 5 on both, so share the host's
         t->state.tpidr = thread_pointer();
         current = t;
@@ -322,41 +382,119 @@ uint64_t run_guest(uint64_t function, const Call& call, uint64_t* fp_result) {
 
 namespace {
 
-struct Pair {
-    uint64_t rax;
-    double xmm0;
+struct HostCall {
+    uint64_t ints[6];
+    uint64_t fps[8];
+    const uint64_t* stack;
+    uint64_t count;
+    uint64_t rax, rdx;
+    uint64_t xmm0[2], xmm1[2];
 };
-
-// six ints in registers, then eight doubles and eight more ints as varargs:
-// that lands the doubles in xmm0..7 with al = 8 and the ints on the stack
-typedef Pair (*Positional)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, ...);
-
-double as_double(uint64_t bits) {
-    double d;
-    std::memcpy(&d, &bits, 8);
-    return d;
-}
+static_assert(offsetof(HostCall, stack) == 112 && offsetof(HostCall, rax) == 128 && offsetof(HostCall, xmm1) == 160);
 
 }  // namespace
 
+}  // namespace tsugiki::rt
+
+extern "C" void tsugiki_host_call(void* function, tsugiki::rt::HostCall* call);
+
+namespace tsugiki::rt {
+
+// six ints in registers, the guest's x6 x7 and stack words on the host stack, doubles in xmm0..7;
+// rax:rdx and xmm0:xmm1 come back, for 16-byte structs too
 void generic_call(tsugiki_state* s, const Stub& stub) {
     uint64_t back = s->x[30];
-    uint64_t extra[8];
+    HostCall c;
+    for (int i = 0; i < 6; ++i) {
+        c.ints[i] = s->x[i];
+    }
     for (int i = 0; i < 8; ++i) {
+        c.fps[i] = s->v[i].lo;
+    }
+    uint64_t extra[16];
+    for (int i = 0; i < 16; ++i) {
         extra[i] = int_arg(s, 6 + i);
     }
-    double d[8];
-    for (int i = 0; i < 8; ++i) {
-        d[i] = as_double(s->v[i].lo);
-    }
-    auto f = reinterpret_cast<Positional>(stub.host);
-    Pair r = f(s->x[0], s->x[1], s->x[2], s->x[3], s->x[4], s->x[5], d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], extra[0], extra[1], extra[2],
-               extra[3], extra[4], extra[5], extra[6], extra[7]);
-    s->x[0] = r.rax;
-    std::memcpy(&s->v[0].lo, &r.xmm0, 8);
+    c.stack = extra;
+    c.count = 16;
+    tsugiki_host_call(stub.host, &c);
+    s->x[0] = c.rax;
+    s->x[1] = c.rdx;
+    s->v[0].lo = c.xmm0[0];
     s->v[0].hi = 0;
+    s->v[1].lo = c.xmm1[0];
+    s->v[1].hi = 0;
     s->pc = back;
 }
+
+// ---- host code jumping into guest code through plain pointers ----
+
+namespace {
+
+struct sigaction previous_segv;
+
+bool in_guest_image(uint64_t address) {
+    Modules& all = modules();
+    Loaded** list = all.list.load(std::memory_order_acquire);
+    size_t count = all.count.load(std::memory_order_acquire);
+    for (size_t i = 0; i < count; ++i) {
+        if (address - list[i]->base < list[i]->size) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// the image isn't executable, so a host call into it faults right at the target:
+// point rip at an entry that runs the guest function instead, args and return address untouched
+void on_segv(int signal, siginfo_t* info, void* context) {
+    auto* uc = static_cast<ucontext_t*>(context);
+    uint64_t at = uint64_t(uc->uc_mcontext.gregs[REG_RIP]);
+    if (reinterpret_cast<uint64_t>(info->si_addr) == at) {
+        if (in_guest_image(at)) {
+            uc->uc_mcontext.gregs[REG_R10] = greg_t(at);
+            uc->uc_mcontext.gregs[REG_RIP] = greg_t(reinterpret_cast<uint64_t>(tsugiki_raw_entry));
+            return;
+        }
+        // a stub handed to the host, like &strlen: run what's behind it
+        Stubs& st = stubs();
+        uint64_t offset = at - st.base;
+        if (offset < most_stubs * stub_size && offset % stub_size == 0 && offset / stub_size < st.all.size()) {
+            const Stub& stub = st.all[offset / stub_size];
+            if (stub.call == generic_call && stub.host) {
+                uc->uc_mcontext.gregs[REG_RIP] = greg_t(reinterpret_cast<uint64_t>(stub.host));
+                return;
+            }
+        }
+    }
+    // not ours
+    if (previous_segv.sa_flags & SA_SIGINFO) {
+        if (previous_segv.sa_sigaction) {
+            previous_segv.sa_sigaction(signal, info, context);
+            return;
+        }
+    } else if (previous_segv.sa_handler != SIG_DFL && previous_segv.sa_handler != SIG_IGN) {
+        previous_segv.sa_handler(signal);
+        return;
+    }
+    // the fault comes back and kills us the normal way
+    struct sigaction normal {};
+    normal.sa_handler = SIG_DFL;
+    sigaction(signal, &normal, nullptr);
+}
+
+void watch_segv() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        struct sigaction action {};
+        action.sa_sigaction = on_segv;
+        action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        sigemptyset(&action.sa_mask);
+        sigaction(SIGSEGV, &action, &previous_segv);
+    });
+}
+
+}  // namespace
 
 // ---- loading ----
 
@@ -381,6 +519,7 @@ extern "C" void tsugiki_load(tsugiki_module* m) {
     if (m->loaded) {
         return;
     }
+    watch_segv();
     auto* l = new Loaded;
     l->module = m;
     try {
@@ -410,6 +549,18 @@ extern "C" void tsugiki_load(tsugiki_module* m) {
     l->base = base;
     l->size = size;
     *m->base = base;
+    for (const elf::Segment& seg : lib.segments()) {
+        Elf64_Phdr ph{};
+        ph.p_type = seg.type;
+        ph.p_flags = seg.flags;
+        ph.p_offset = seg.offset;
+        ph.p_vaddr = seg.vaddr;
+        ph.p_paddr = seg.vaddr;
+        ph.p_filesz = seg.filesz;
+        ph.p_memsz = seg.memsz;
+        ph.p_align = seg.align;
+        l->phdrs.push_back(ph);
+    }
     for (size_t i = 1; i < lib.dynamic_symbols.size(); ++i) {
         const elf::Symbol& s = lib.dynamic_symbols[i];
         if (s.defined() && s.bind != elf::symbol::local && !s.name.empty()) {
@@ -503,6 +654,18 @@ extern "C" void tsugiki_call(tsugiki_state* s) {
     }
     tsugiki_code code = find(s->pc);
     if (code == nullptr) {
+        // one of our callback slots handed back: straight to its guest function
+        if (uint64_t guest = callback_target(s->pc)) {
+            s->pc = guest;
+            tsugiki_call(s);
+            return;
+        }
+        // host code through a plain pointer: vtables of host apis, eglGetProcAddress and such
+        if (host_code_cached(s->pc)) {
+            Stub stub{generic_call, reinterpret_cast<void*>(s->pc), 0, "host"};
+            generic_call(s, stub);
+            return;
+        }
         fail("nothing to run at 0x%llx (lr 0x%llx)", (unsigned long long)s->pc, (unsigned long long)s->x[30]);
     }
     code(s);

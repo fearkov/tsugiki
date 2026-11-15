@@ -1,6 +1,8 @@
 // arm64 code that calls into the real libc, built with the ndk
 // the device check runs it translated, through every bridge we have
 
+#define _BSD_SOURCE
+#include <SLES/OpenSLES.h>
 #include <errno.h>
 #include <pthread.h>
 #include <setjmp.h>
@@ -114,3 +116,46 @@ static int constructed;
 __attribute__((constructor)) static void construct(void) { constructed = 42; }
 
 int bridge_constructed(void) { return constructed; }
+
+static char sink[256];
+static int sink_length;
+
+static int sink_write(void* cookie, const char* data, int n) {
+    (void)cookie;
+    for (int i = 0; i < n && sink_length < 255; ++i) sink[sink_length++] = data[i];
+    sink[sink_length] = 0;
+    return n;
+}
+
+// host stdio calling a guest function it only has as a plain pointer
+int bridge_funopen(char* out, int size) {
+    sink_length = 0;
+    FILE* f = funopen(NULL, NULL, sink_write, NULL, NULL);
+    if (!f) return -1;
+    fprintf(f, "cookie %d %s %.1f", 42, "jar", 2.5);
+    fclose(f);
+    snprintf(out, (size_t)size, "%s", sink);
+    return sink_length;
+}
+
+// guest code calling host code it only has as plain pointers, opensl's vtables
+int bridge_opensl(void) {
+    SLObjectItf engine = NULL, mix = NULL;
+    SLEngineItf itf = NULL;
+    int r = 0;
+    if (slCreateEngine(&engine, 0, NULL, 0, NULL, NULL) != SL_RESULT_SUCCESS) return 1;
+    if ((*engine)->Realize(engine, SL_BOOLEAN_FALSE) != SL_RESULT_SUCCESS) r |= 2;
+    if ((*engine)->GetInterface(engine, SL_IID_ENGINE, &itf) != SL_RESULT_SUCCESS) {
+        r |= 4;
+    } else if ((*itf)->CreateOutputMix(itf, &mix, 0, NULL, NULL) != SL_RESULT_SUCCESS) {
+        r |= 8;
+    } else {
+        if ((*mix)->Realize(mix, SL_BOOLEAN_FALSE) != SL_RESULT_SUCCESS) r |= 16;
+        (*mix)->Destroy(mix);
+    }
+    (*engine)->Destroy(engine);
+    return r;
+}
+
+// 16-byte struct back in two registers
+lldiv_t bridge_lldiv(long long a, long long b) { return lldiv(a, b); }

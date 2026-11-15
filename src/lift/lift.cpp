@@ -910,7 +910,8 @@ private:
 
 Program discover(const elf::Library& library) {
     std::vector<std::pair<uint64_t, uint64_t>> ranges;
-    for (const eh_frame::Fde& f : eh_frame::read(library)) {
+    auto fdes = eh_frame::read(library);
+    for (const eh_frame::Fde& f : fdes) {
         if (f.size > 0 && library.executable(f.start)) {
             ranges.emplace_back(f.start, f.start + f.size);
         }
@@ -1087,6 +1088,12 @@ Program discover(const elf::Library& library) {
         }
         program.starts[start] = program.functions.size();
         program.functions.push_back(std::move(f));
+    }
+    // c++ landing pads: the unwinder jumps there, through the dispatcher for us
+    for (const eh_frame::Fde& fde : fdes) {
+        for (uint64_t pad : eh_frame::landing_pads(library, fde)) {
+            pointers.insert(pad);
+        }
     }
     // code pointers into the middle of a function, labels as values and such
     for (uint64_t p : pointers) {
