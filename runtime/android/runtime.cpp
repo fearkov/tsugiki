@@ -427,6 +427,70 @@ void generic_call(tsugiki_state* s, const Stub& stub) {
     s->pc = back;
 }
 
+// ---- elf tls, the tlsdesc way arm64 android does it ----
+
+namespace {
+
+struct TlsTemplate {
+    uint64_t image;
+    uint64_t filesz;
+    uint64_t memsz;
+    uint64_t align;
+};
+
+std::mutex tls_lock;
+std::vector<TlsTemplate> tls_templates;
+
+// this thread's blocks, one per module with a PT_TLS, freed when it exits
+struct ThreadTls {
+    std::vector<uint8_t*> blocks;
+    ~ThreadTls() {
+        for (uint8_t* b : blocks) {
+            std::free(b);
+        }
+    }
+};
+thread_local ThreadTls thread_tls;
+
+uint8_t* tls_block(uint32_t id) {
+    auto& blocks = thread_tls.blocks;
+    if (id < blocks.size() && blocks[id]) {
+        return blocks[id];
+    }
+    TlsTemplate t;
+    {
+        std::lock_guard guard(tls_lock);
+        t = tls_templates.at(id);
+    }
+    uint64_t align = std::max<uint64_t>(t.align, 16);
+    auto* block = static_cast<uint8_t*>(std::aligned_alloc(align, (t.memsz + align - 1) / align * align + align));
+    std::memcpy(block, reinterpret_cast<const void*>(t.image), t.filesz);
+    std::memset(block + t.filesz, 0, t.memsz - t.filesz);
+    if (blocks.size() <= id) {
+        blocks.resize(id + 1, nullptr);
+    }
+    blocks[id] = block;
+    return block;
+}
+
+// the descriptor's second word: module id up top, offset in its block below
+constexpr int tls_shift = 40;
+
+// x0 points at the descriptor, back comes the variable's address minus tpidr
+void tlsdesc_call(tsugiki_state* s, const Stub&) {
+    uint64_t arg = reinterpret_cast<const uint64_t*>(s->x[0])[1];
+    uint8_t* block = tls_block(uint32_t(arg >> tls_shift));
+    s->x[0] = reinterpret_cast<uint64_t>(block) + (arg & ((uint64_t(1) << tls_shift) - 1)) - s->tpidr;
+    s->pc = s->x[30];
+}
+
+uint64_t tlsdesc_stub() {
+    static uint64_t stub = make_stub({tlsdesc_call, nullptr, 0, "tlsdesc"});
+    return stub;
+}
+
+}  // namespace
+
 // ---- host code jumping into guest code through plain pointers ----
 
 namespace {
@@ -567,6 +631,13 @@ extern "C" void tsugiki_load(tsugiki_module* m) {
             l->exports.emplace(s.name, base + s.value);
         }
     }
+    // its tls template, read after relocation since .tdata can hold pointers
+    int64_t tls_id = -1;
+    if (auto tls = lib.segment(elf::segment::tls)) {
+        std::lock_guard guard(tls_lock);
+        tls_id = int64_t(tls_templates.size());
+        tls_templates.push_back({base + tls->vaddr, tls->filesz, tls->memsz, tls->align});
+    }
     // imports, each name once
     std::unordered_map<uint32_t, uint64_t> resolved;
     for (const elf::Relocation& x : lib.relocations) {
@@ -595,6 +666,17 @@ extern "C" void tsugiki_load(tsugiki_module* m) {
             break;
         case elf::relocation::none:
             break;
+        case elf::relocation::tlsdesc: {
+            const elf::Symbol* sym = x.symbol ? &lib.dynamic_symbols[x.symbol] : nullptr;
+            if (tls_id < 0 || (sym && !sym->defined())) {
+                // a thread_local from another lib, not yet
+                log("%s: tls %s from elsewhere at 0x%llx not handled yet", m->soname, sym ? sym->name.c_str() : "?", (unsigned long long)x.offset);
+                break;
+            }
+            slot[0] = tlsdesc_stub();
+            slot[1] = (uint64_t(tls_id) << tls_shift) | ((sym ? sym->value : 0) + uint64_t(x.addend));
+            break;
+        }
         default:
             log("%s: relocation %s at 0x%llx not handled yet", m->soname, elf::relocation::name(x.type).c_str(), (unsigned long long)x.offset);
             break;

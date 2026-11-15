@@ -208,6 +208,9 @@ void bridge() {
     int sl = get<int (*)()>(lib, "bridge_opensl")();
     std::printf("bridge_opensl: %d\n", sl);
     CHECK(sl == 0);
+    int tls = get<int (*)()>(lib, "bridge_tls")();
+    std::printf("bridge_tls: %d\n", tls);
+    CHECK(tls == 6);
     lldiv_t d = get<lldiv_t (*)(long long, long long)>(lib, "bridge_lldiv")(-1000000000007LL, 13);
     CHECK(d.quot == -1000000000007LL / 13 && d.rem == -1000000000007LL % 13);
 }

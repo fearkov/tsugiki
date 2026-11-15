@@ -159,3 +159,29 @@ int bridge_opensl(void) {
 
 // 16-byte struct back in two registers
 lldiv_t bridge_lldiv(long long a, long long b) { return lldiv(a, b); }
+
+static __thread int tls_counter = 5;
+// a pointer in .tdata, relocated before threads copy it
+static __thread const char* tls_name = "main";
+static __thread char tls_big[64];
+
+static void* tls_worker(void* arg) {
+    int n = (int)(intptr_t)arg;
+    for (int i = 0; i < n; ++i) tls_counter++;
+    tls_name = "worker";
+    tls_big[0] = 'w';
+    return (void*)(intptr_t)(tls_counter * 1000 + tls_name[0] + tls_big[0]);
+}
+
+// every thread its own copy, starting from .tdata and .tbss
+int bridge_tls(void) {
+    tls_counter += 1;
+    pthread_t t;
+    void* back = NULL;
+    pthread_create(&t, NULL, tls_worker, (void*)(intptr_t)10);
+    pthread_join(t, &back);
+    int worker = (int)(intptr_t)back;
+    if (worker != 15000 + 'w' + 'w') return -1;
+    if (tls_name[0] != 'm' || tls_big[0] != 0) return -2;
+    return tls_counter;
+}
