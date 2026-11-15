@@ -14,6 +14,7 @@ pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
 
 add_library(tsugiki_core STATIC
     src/a64/decoder.cpp
+    src/android.cpp
     src/a64/simd.cpp
     src/apk.cpp
     src/eh_frame.cpp
@@ -24,6 +25,8 @@ add_library(tsugiki_core STATIC
 target_include_directories(tsugiki_core PUBLIC src)
 target_link_libraries(tsugiki_core PUBLIC PkgConfig::LIBZIP)
 target_compile_options(tsugiki_core PRIVATE -Wall -Wextra -Wpedantic)
+# the runtime gets built from here for android
+target_compile_definitions(tsugiki_core PRIVATE TSUGIKI_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 add_executable(tsugiki src/main.cpp)
 target_link_libraries(tsugiki PRIVATE tsugiki_core)

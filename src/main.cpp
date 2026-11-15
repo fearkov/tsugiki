@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "android.hpp"
 #include "apk.hpp"
 #include "bytes.hpp"
 #include "eh_frame.hpp"
@@ -164,9 +165,21 @@ int translate(const std::string& path, const std::string& id, const std::string&
     return 0;
 }
 
+// x86_64 android libs from arm64 ones, plus libtsugiki.so
+int build(const std::vector<std::string>& paths, const std::string& dir) {
+    android::build_runtime(dir);
+    for (const std::string& path : android::build_order(paths)) {
+        std::cout << path << "\n" << std::flush;
+        android::build_library(path, dir);
+    }
+    return 0;
+}
+
 void usage() {
     std::cerr << "usage: tsugiki info <file.apk | lib.so>...\n"
-                 "       tsugiki translate <lib.so> <id> <out.cpp>\n";
+                 "       tsugiki translate <lib.so> <id> <out.cpp>\n"
+                 "       tsugiki build <lib.so>... -o <dir>\n"
+                 "       tsugiki apk [--force] <in.apk> -o <out.apk>\n";
 }
 
 }  // namespace
@@ -185,6 +198,21 @@ int main(int argc, char** argv) {
         }
         if (command == "translate" && args.size() == 3) {
             return translate(args[0], args[1], args[2]);
+        }
+        if (command == "apk") {
+            bool force = !args.empty() && args[0] == "--force";
+            if (force) {
+                args.erase(args.begin());
+            }
+            if (args.size() == 3 && args[1] == "-o") {
+                android::build_apk(args[0], args[2], force);
+                return 0;
+            }
+        }
+        if (command == "build" && args.size() >= 3 && args[args.size() - 2] == "-o") {
+            std::string dir = args.back();
+            args.resize(args.size() - 2);
+            return build(args, dir);
         }
         usage();
         return 2;

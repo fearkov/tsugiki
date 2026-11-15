@@ -33,7 +33,25 @@ struct tsugiki_entry {
     tsugiki_code code;
 };
 
+// one translated library, handed to the runtime when it loads
+struct tsugiki_module {
+    const char* soname;
+    const tsugiki_entry* entries;
+    uint64_t count;
+    // where the code finds the guest image
+    uint64_t* base;
+    // the arm64 .so, embedded
+    const uint8_t* image;
+    uint64_t image_size;
+    // the runtime's, null until loaded
+    void* loaded;
+};
+
 extern "C" {
+// maps the image, relocates it, runs its constructors
+void tsugiki_load(tsugiki_module* m);
+// a translated executable's main: loads it and runs its _start
+int tsugiki_main(tsugiki_module* m, int argc, char** argv, char** envp);
 // runs whatever is at s->pc, one function's worth
 void tsugiki_call(tsugiki_state* s);
 void tsugiki_svc(tsugiki_state* s, uint32_t imm);

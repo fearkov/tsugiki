@@ -213,8 +213,8 @@ private:
         case 3: v = a + " - " + b; break;
         case 4: v = "__builtin_elementwise_maximum(" + a + ", " + b + ")"; break;
         case 5: v = "__builtin_elementwise_minimum(" + a + ", " + b + ")"; break;
-        case 6: v = "__builtin_elementwise_maximumnum(" + a + ", " + b + ")"; break;
-        case 7: v = "__builtin_elementwise_minimumnum(" + a + ", " + b + ")"; break;
+        case 6: v = "ts_maxnum(" + a + ", " + b + ")"; break;
+        case 7: v = "ts_minnum(" + a + ", " + b + ")"; break;
         case 8: v = "-(" + a + " * " + b + ")"; break;
         default: return {};
         }
@@ -374,8 +374,8 @@ private:
         const std::string& op = name();
         std::string qs = q ? "true" : "false";
         auto pair = [&](const std::string& body) { return "ts_vpair<" + t + ", " + e + ">(" + a + ", " + b + ", [](" + e + " x, " + e + " y) { return " + body + "; }, " + qs + ")"; };
-        if (op == "fmaxnm") v = "__builtin_elementwise_maximumnum(" + a + ", " + b + ")";
-        else if (op == "fminnm") v = "__builtin_elementwise_minimumnum(" + a + ", " + b + ")";
+        if (op == "fmaxnm") v = "ts_maxnum(" + a + ", " + b + ")";
+        else if (op == "fminnm") v = "ts_minnum(" + a + ", " + b + ")";
         else if (op == "fmla") v = "__builtin_elementwise_fma(" + a + ", " + b + ", " + dd + ")";
         else if (op == "fmls") v = "__builtin_elementwise_fma(-" + a + ", " + b + ", " + dd + ")";
         else if (op == "fadd") v = a + " + " + b;
@@ -386,8 +386,8 @@ private:
         else if (op == "fmin") v = "__builtin_elementwise_minimum(" + a + ", " + b + ")";
         else if (op == "frecps") v = "ts_vfrecps<" + t + ", " + e + ">(" + a + ", " + b + ")";
         else if (op == "frsqrts") v = "ts_vfrsqrts<" + t + ", " + e + ">(" + a + ", " + b + ")";
-        else if (op == "fmaxnmp") v = pair("__builtin_elementwise_maximumnum(x, y)");
-        else if (op == "fminnmp") v = pair("__builtin_elementwise_minimumnum(x, y)");
+        else if (op == "fmaxnmp") v = pair("ts_maxnum(x, y)");
+        else if (op == "fminnmp") v = pair("ts_minnum(x, y)");
         else if (op == "faddp") v = pair("x + y");
         else if (op == "fmaxp") v = pair("__builtin_elementwise_maximum(x, y)");
         else if (op == "fminp") v = pair("__builtin_elementwise_minimum(x, y)");
@@ -602,7 +602,7 @@ private:
                 return {};
             }
             std::string f = op == "fmaxv" ? "__builtin_elementwise_maximum" : op == "fminv" ? "__builtin_elementwise_minimum"
-                          : op == "fmaxnmv" ? "__builtin_elementwise_maximumnum" : "__builtin_elementwise_minimumnum";
+                          : op == "fmaxnmv" ? "ts_maxnum" : "ts_minnum";
             return "{ ts_f32 x = " + reg(n, "ts_f32") + "; ts_ws(s, " + str(d) + ", " + f + "(" + f + "(x[0], x[1]), " + f + "(x[2], x[3]))); }";
         }
         bool is_signed = op[0] == 's' || op == "addv";
@@ -1038,8 +1038,8 @@ private:
         if (op == "faddp") v = a + " + " + b;
         else if (op == "fmaxp") v = "__builtin_elementwise_maximum(" + a + ", " + b + ")";
         else if (op == "fminp") v = "__builtin_elementwise_minimum(" + a + ", " + b + ")";
-        else if (op == "fmaxnmp") v = "__builtin_elementwise_maximumnum(" + a + ", " + b + ")";
-        else if (op == "fminnmp") v = "__builtin_elementwise_minimumnum(" + a + ", " + b + ")";
+        else if (op == "fmaxnmp") v = "ts_maxnum(" + a + ", " + b + ")";
+        else if (op == "fminnmp") v = "ts_minnum(" + a + ", " + b + ")";
         else return {};
         return fset(d, lane, v);
     }

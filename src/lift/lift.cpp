@@ -953,6 +953,10 @@ Program discover(const elf::Library& library) {
     for (auto [start, end] : known) {
         scan(start, end);
     }
+    // an executable's _start, no fde or symbol for it
+    if (library.entry() && library.executable(library.entry()) && !inside_known(library.entry())) {
+        pending.push_back(library.entry());
+    }
     while (!pending.empty()) {
         uint64_t start = pending.back();
         pending.pop_back();
@@ -1005,6 +1009,24 @@ Program discover(const elf::Library& library) {
         }
         program.starts[start] = program.functions.size();
         program.functions.push_back(std::move(f));
+    }
+    // branches into the middle of another function, like lld's a53 erratum veneers
+    // jumping back: the dispatcher has to be able to come in there
+    for (const Function& f : program.functions) {
+        for (size_t i = 0; i < f.code.size(); ++i) {
+            auto target = branch_target(f.code[i], f.start + 4 * i);
+            if (!target || (*target >= f.start && *target < f.end)) {
+                continue;
+            }
+            auto it = program.starts.upper_bound(*target);
+            if (it == program.starts.begin()) {
+                continue;
+            }
+            Function& g = program.functions[std::prev(it)->second];
+            if (*target > g.start && *target < g.end) {
+                g.entries.insert(*target);
+            }
+        }
     }
     return program;
 }

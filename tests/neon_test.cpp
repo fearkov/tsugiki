@@ -365,3 +365,32 @@ TEST(translated_aes_and_sha256) {
     const uint32_t digest[8] = {0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223, 0xb00361a3, 0x96177a9c, 0xb410ff61, 0xf20015ad};
     for (int i = 0; i < 8; ++i) CHECK_EQ(state[i], digest[i]);
 }
+
+// the fallback the ndk build uses against clang's builtins
+TEST(soft_maxnum_minnum) {
+    const float nan = std::nanf(""), inf = INFINITY;
+    const float values[] = {nan, -nan, 0.0f, -0.0f, 1.5f, -2.5f, inf, -inf, 1e-40f};
+    auto bits = [](auto v) {
+        uint8_t b[sizeof v];
+        std::memcpy(b, &v, sizeof v);
+        return std::vector<uint8_t>(b, b + sizeof v);
+    };
+    for (float a : values) {
+        for (float b : values) {
+            ts_f32 va = {a, b, a, b}, vb = {b, a, a, b};
+            CHECK(bits(ts_maxnum_soft(va, vb)) == bits(__builtin_elementwise_maximumnum(va, vb)) || std::isnan(a) || std::isnan(b));
+            CHECK(bits(ts_minnum_soft(va, vb)) == bits(__builtin_elementwise_minimumnum(va, vb)) || std::isnan(a) || std::isnan(b));
+            ts_f64 da = {double(a), double(b)}, db = {double(b), double(a)};
+            ts_f64 got = ts_maxnum_soft(da, db), want = __builtin_elementwise_maximumnum(da, db);
+            for (int i = 0; i < 2; ++i) {
+                CHECK((std::isnan(got[i]) && std::isnan(want[i])) || bits(got[i]) == bits(want[i]));
+            }
+            got = ts_minnum_soft(da, db), want = __builtin_elementwise_minimumnum(da, db);
+            for (int i = 0; i < 2; ++i) {
+                CHECK((std::isnan(got[i]) && std::isnan(want[i])) || bits(got[i]) == bits(want[i]));
+            }
+            float sm = ts_maxnum_soft(a, b), wm = __builtin_elementwise_maximumnum(a, b);
+            CHECK((std::isnan(sm) && std::isnan(wm)) || bits(sm) == bits(wm));
+        }
+    }
+}

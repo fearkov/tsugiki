@@ -28,6 +28,28 @@ typedef float ts_f32h __attribute__((vector_size(8)));
 typedef uint64_t ts_u64h __attribute__((vector_size(8)));
 typedef int64_t ts_i64h __attribute__((vector_size(8)));
 
+// fmaxnm and fminnm: a nan takes the other one, then plain max/min
+template <typename T>
+static inline T ts_maxnum_soft(T a, T b) {
+    T x = a != a ? b : a;
+    T y = b != b ? a : b;
+    return __builtin_elementwise_maximum(x, y);
+}
+template <typename T>
+static inline T ts_minnum_soft(T a, T b) {
+    T x = a != a ? b : a;
+    T y = b != b ? a : b;
+    return __builtin_elementwise_minimum(x, y);
+}
+// the ndk's clang doesn't have the builtins yet
+#if __has_builtin(__builtin_elementwise_maximumnum)
+#define ts_maxnum __builtin_elementwise_maximumnum
+#define ts_minnum __builtin_elementwise_minimumnum
+#else
+#define ts_maxnum ts_maxnum_soft
+#define ts_minnum ts_minnum_soft
+#endif
+
 static inline ts_u64 ts_v(const tsugiki_state* s, int n) {
     ts_u64 v;
     memcpy(&v, &s->v[n], 16);
