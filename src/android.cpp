@@ -96,11 +96,14 @@ std::string library_id(const std::string& soname) {
 
 std::string module_cpp(const std::string& id, const std::string& soname, bool executable) {
     std::string m = "tsugiki_module_" + id;
-    std::string size = "    " + m + ".image_size = uint64_t(tsugiki_image_" + id + "_end - tsugiki_image_" + id + ");\n";
+    std::string size = "    " + m + ".image_size = uint64_t(tsugiki_image_" + id + "_end - tsugiki_image_" + id + ");\n" +
+                       "    " + m + ".space_size = uint64_t(tsugiki_space_" + id + "_end - tsugiki_space_" + id + ");\n";
     std::string out = "extern \"C\" const uint8_t tsugiki_image_" + id + "[];\n" +
                       "extern \"C\" const uint8_t tsugiki_image_" + id + "_end[];\n" +
+                      "extern \"C\" uint8_t tsugiki_space_" + id + "[];\n" +
+                      "extern \"C\" uint8_t tsugiki_space_" + id + "_end[];\n" +
                       "extern \"C\" __attribute__((visibility(\"hidden\"))) tsugiki_module " + m + " = {\"" + soname + "\", tsugiki_entries_" + id +
-                      ", tsugiki_entry_count_" + id + ", &tsugiki_base_" + id + ", tsugiki_image_" + id + ", 0, nullptr};\n";
+                      ", tsugiki_entry_count_" + id + ", &tsugiki_base_" + id + ", tsugiki_image_" + id + ", 0, nullptr, tsugiki_space_" + id + ", 0};\n";
     if (executable) {
         return out + "int main(int argc, char** argv, char** envp) {\n" + size + "    return tsugiki_main(&" + m + ", argc, argv, envp);\n}\n";
     }
@@ -112,7 +115,19 @@ std::string glue_asm(const elf::Library& library, const std::string& id, const s
     out += "    .section .rodata.tsugiki_image, \"a\"\n    .balign 16\n";
     out += "    .globl tsugiki_image_" + id + "\n    .hidden tsugiki_image_" + id + "\ntsugiki_image_" + id + ":\n";
     out += "    .incbin \"" + image_path + "\"\n";
-    out += "    .globl tsugiki_image_" + id + "_end\n    .hidden tsugiki_image_" + id + "_end\ntsugiki_image_" + id + "_end:\n\n    .text\n";
+    out += "    .globl tsugiki_image_" + id + "_end\n    .hidden tsugiki_image_" + id + "_end\ntsugiki_image_" + id + "_end:\n\n";
+    // room for the image at run time, 64k aligned by the runtime
+    uint64_t extent = 0;
+    for (const elf::Segment& s : library.segments()) {
+        if (s.type == elf::segment::load) {
+            extent = std::max(extent, s.vaddr + s.memsz);
+        }
+    }
+    uint64_t space = ((extent + 0xffff) & ~uint64_t(0xffff)) + 0x10000;
+    out += "    .section .bss.tsugiki_space, \"aw\", @nobits\n    .balign 4096\n";
+    out += "    .globl tsugiki_space_" + id + "\n    .hidden tsugiki_space_" + id + "\ntsugiki_space_" + id + ":\n";
+    out += "    .zero " + std::to_string(space) + "\n";
+    out += "    .globl tsugiki_space_" + id + "_end\n    .hidden tsugiki_space_" + id + "_end\ntsugiki_space_" + id + "_end:\n\n    .text\n";
     std::set<std::string> done;
     for (const elf::Symbol& s : library.dynamic_symbols) {
         if (executable || !s.defined() || !s.code() || s.bind == elf::symbol::local || s.visibility == 2 || s.name.empty() || done.contains(s.name)) {

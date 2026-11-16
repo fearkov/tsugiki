@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <fenv.h>
 #include <signal.h>
 #include <sys/epoll.h>
 #include <sys/stat.h>
@@ -248,4 +249,52 @@ long bridge_dlsym(int n) {
     unsigned long (*f)(unsigned long) = (unsigned long (*)(unsigned long))dlsym(h, "fib");
     if (!f) return -2;
     return (long)f((unsigned long)n);
+}
+
+// fenv_t is 8 bytes here and 32 on x86, the flags and rounding modes are numbered differently too
+int bridge_fenv(void) {
+    fenv_t saved[2];
+    int canary = 0x5a5a5a5a;
+    feholdexcept(&saved[0]);
+    volatile double big = 1e308, ten = 10;
+    volatile double inf = big * ten;
+    int raised = fetestexcept(FE_OVERFLOW) == FE_OVERFLOW;
+    feclearexcept(FE_ALL_EXCEPT);
+    int cleared = fetestexcept(FE_ALL_EXCEPT) == 0;
+    fesetround(FE_DOWNWARD);
+    volatile float one = 1, three = 3;
+    volatile float third = one / three;
+    uint32_t bits;
+    memcpy(&bits, (const void*)&third, 4);
+    int down = fegetround() == FE_DOWNWARD && bits == 0x3eaaaaaa;
+    fesetenv(&saved[0]);
+    volatile float again = one / three;
+    memcpy(&bits, (const void*)&again, 4);
+    int back = fegetround() == FE_TONEAREST && bits == 0x3eaaaaab;
+    (void)inf;
+    return raised | cleared << 1 | down << 2 | back << 3 | (canary == 0x5a5a5a5a) << 4;
+}
+
+// arm64 numbers O_DIRECTORY and O_NOFOLLOW like x86 numbers O_DIRECT and O_LARGEFILE
+int bridge_open_flags(const char* file, const char* link) {
+    int r = 0;
+    int fd = open(file, O_RDONLY | O_DIRECTORY);
+    if (fd < 0 && errno == ENOTDIR) r |= 1;
+    if (fd >= 0) close(fd);
+    unlink(link);
+    if (symlink(file, link) == 0) {
+        fd = open(link, O_RDONLY | O_NOFOLLOW);
+        if (fd < 0 && errno == ELOOP) r |= 2;
+        if (fd >= 0) close(fd);
+        fd = openat(AT_FDCWD, link, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (fd < 0 && errno == ELOOP) r |= 4;
+        if (fd >= 0) close(fd);
+        unlink(link);
+    }
+    fd = open(file, O_RDONLY);
+    if (fd >= 0) {
+        if (fcntl(fd, F_SETFL, O_NONBLOCK) == 0 && (fcntl(fd, F_GETFL) & (O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW)) == O_NONBLOCK) r |= 8;
+        close(fd);
+    }
+    return r;
 }

@@ -1,6 +1,8 @@
 // libc imports the generic call can't do: va_lists, callbacks, setjmp, dl*, auxv, syscall
 #include <android/log.h>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <fenv.h>
 #include <link.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -28,6 +30,8 @@ extern "C" int __cxa_thread_atexit_impl(void (*)(void*), void*, void*);
 extern "C" void* __dso_handle;
 
 extern "C" int __cxa_atexit(void (*)(void*), void*, void*);
+
+extern "C" [[noreturn]] void __stack_chk_fail();
 
 namespace tsugiki::rt {
 
@@ -70,6 +74,16 @@ GuestVaList va(uint64_t pointer) {
 }
 
 namespace {
+
+// the kernel's own return, -errno and all
+long raw_syscall(long number, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f) {
+    long result;
+    register uint64_t r10 asm("r10") = d;
+    register uint64_t r8 asm("r8") = e;
+    register uint64_t r9 asm("r9") = f;
+    asm volatile("syscall" : "=a"(result) : "a"(number), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory");
+    return result;
+}
 
 // back to the guest that called
 void ret(tsugiki_state* s, uint64_t back, uint64_t value) {
@@ -437,6 +451,58 @@ long host_syscall_number(uint64_t arm) {
     case 278: return SYS_getrandom;
     case 279: return SYS_memfd_create;
     case 283: return SYS_membarrier;
+    case 43: return SYS_statfs;
+    case 44: return SYS_fstatfs;
+    case 46: return SYS_ftruncate;
+    case 47: return SYS_fallocate;
+    case 49: return SYS_chdir;
+    case 50: return SYS_fchdir;
+    case 52: return SYS_fchmod;
+    case 53: return SYS_fchmodat;
+    case 54: return SYS_fchownat;
+    case 55: return SYS_fchown;
+    case 59: return SYS_pipe2;
+    case 71: return SYS_sendfile;
+    case 72: return SYS_pselect6;
+    case 73: return SYS_ppoll;
+    case 79: return SYS_newfstatat;
+    case 80: return SYS_fstat;
+    case 81: return SYS_sync;
+    case 82: return SYS_fsync;
+    case 83: return SYS_fdatasync;
+    case 88: return SYS_utimensat;
+    case 99: return SYS_set_robust_list;
+    case 100: return SYS_get_robust_list;
+    case 132: return SYS_sigaltstack;
+    case 135: return SYS_rt_sigprocmask;
+    case 153: return SYS_times;
+    case 160: return SYS_uname;
+    case 163: return SYS_getrlimit;
+    case 164: return SYS_setrlimit;
+    case 165: return SYS_getrusage;
+    case 166: return SYS_umask;
+    case 168: return SYS_getcpu;
+    case 198: return SYS_socket;
+    case 199: return SYS_socketpair;
+    case 200: return SYS_bind;
+    case 201: return SYS_listen;
+    case 202: return SYS_accept;
+    case 203: return SYS_connect;
+    case 204: return SYS_getsockname;
+    case 205: return SYS_getpeername;
+    case 206: return SYS_sendto;
+    case 207: return SYS_recvfrom;
+    case 208: return SYS_setsockopt;
+    case 209: return SYS_getsockopt;
+    case 210: return SYS_shutdown;
+    case 211: return SYS_sendmsg;
+    case 212: return SYS_recvmsg;
+    case 242: return SYS_accept4;
+    case 260: return SYS_wait4;
+    case 261: return SYS_prlimit64;
+    case 276: return SYS_renameat2;
+    case 291: return SYS_statx;
+    case 293: return SYS_rseq;
     default: return -1;
     }
 }
@@ -444,16 +510,37 @@ long host_syscall_number(uint64_t arm) {
 namespace {
 
 void syscall_thunk(tsugiki_state* s, const Stub&) {
-    long number = host_syscall_number(s->x[0]);
-    long r;
-    if (number < 0) {
-        log("syscall %llu has no x86_64 number here", (unsigned long long)s->x[0]);
-        errno = ENOSYS;
+    long r = guest_syscall(s->x[0], s->x[1], s->x[2], s->x[3], s->x[4], s->x[5], s->x[6]);
+    if (r < 0 && r > -4096) {
+        errno = int(-r);
         r = -1;
-    } else {
-        r = syscall(number, s->x[1], s->x[2], s->x[3], s->x[4], s->x[5], s->x[6]);
     }
     ret(s, s->x[30], uint64_t(r));
+}
+
+// open and friends, with arm64's flags
+void open_thunk(tsugiki_state* s, const Stub&) {
+    int r = open(ptr<char>(s->x[0]), int(host_open_flags(s->x[1])), mode_t(s->x[2]));
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
+void openat_thunk(tsugiki_state* s, const Stub&) {
+    int r = openat(int(s->x[0]), ptr<char>(s->x[1]), int(host_open_flags(s->x[2])), mode_t(s->x[3]));
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
+void fcntl_thunk(tsugiki_state* s, const Stub&) {
+    int cmd = int(s->x[1]);
+    uint64_t arg = cmd == F_SETFL ? host_open_flags(s->x[2]) : s->x[2];
+    int r = fcntl(int(s->x[0]), cmd, arg);
+    if (cmd == F_GETFL && r >= 0) {
+        r = int(guest_open_flags(uint64_t(r)));
+    }
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
+void pipe2_thunk(tsugiki_state* s, const Stub&) {
+    ret(s, s->x[30], uint64_t(int64_t(pipe2(ptr<int>(s->x[0]), int(host_open_flags(s->x[1]))))));
 }
 
 // ---- dl*, aware of translated modules ----
@@ -782,6 +869,138 @@ void libc_init_thunk(tsugiki_state* s, const Stub&) {
     exit(int(run_guest(slingshot, call)));
 }
 
+// fenv: arm64's fenv_t is fpcr and fpsr, 8 bytes, x86's is 32, and the constants differ;
+// works on the guest's fpcr/fpsr like bionic's arm64 libm, with mxcsr flags folded in
+struct GuestFenv {
+    uint32_t control, status;
+};
+constexpr uint32_t fe_all = 0x9f;
+
+uint32_t mxcsr_as_fpsr() {
+    unsigned m = __builtin_ia32_stmxcsr();
+    uint32_t f = 0;
+    if (m & 0x01) f |= 0x01;  // invalid
+    if (m & 0x04) f |= 0x02;  // div by zero
+    if (m & 0x08) f |= 0x04;  // overflow
+    if (m & 0x10) f |= 0x08;  // underflow
+    if (m & 0x20) f |= 0x10;  // inexact
+    if (m & 0x02) f |= 0x80;  // denormal
+    return f;
+}
+
+uint32_t get_fpsr(tsugiki_state* s) {
+    return s->fpsr | mxcsr_as_fpsr();
+}
+
+void set_fpsr(tsugiki_state* s, uint32_t f) {
+    s->fpsr = f;
+    unsigned m = __builtin_ia32_stmxcsr() & ~0x3fu;
+    if (f & 0x01) m |= 0x01;
+    if (f & 0x02) m |= 0x04;
+    if (f & 0x04) m |= 0x08;
+    if (f & 0x08) m |= 0x10;
+    if (f & 0x10) m |= 0x20;
+    if (f & 0x80) m |= 0x02;
+    __builtin_ia32_ldmxcsr(m);
+}
+
+GuestFenv guest_fenv(uint64_t at) {
+    // FE_DFL_ENV is the import, the host's own
+    if (at == 0 || at == reinterpret_cast<uint64_t>(FE_DFL_ENV)) {
+        return {0, 0};
+    }
+    return *ptr<GuestFenv>(at);
+}
+
+void fegetenv_thunk(tsugiki_state* s, const Stub&) {
+    *ptr<GuestFenv>(s->x[0]) = {s->fpcr, get_fpsr(s)};
+    ret(s, s->x[30], 0);
+}
+
+void fesetenv_thunk(tsugiki_state* s, const Stub&) {
+    GuestFenv e = guest_fenv(s->x[0]);
+    ts_set_fpcr(s, e.control);
+    set_fpsr(s, e.status);
+    ret(s, s->x[30], 0);
+}
+
+void feholdexcept_thunk(tsugiki_state* s, const Stub&) {
+    *ptr<GuestFenv>(s->x[0]) = {s->fpcr, get_fpsr(s)};
+    set_fpsr(s, get_fpsr(s) & ~fe_all);
+    ret(s, s->x[30], 0);
+}
+
+void feupdateenv_thunk(tsugiki_state* s, const Stub&) {
+    uint32_t raised = get_fpsr(s) & fe_all;
+    GuestFenv e = guest_fenv(s->x[0]);
+    ts_set_fpcr(s, e.control);
+    set_fpsr(s, e.status | raised);
+    ret(s, s->x[30], 0);
+}
+
+void fegetround_thunk(tsugiki_state* s, const Stub&) {
+    ret(s, s->x[30], (s->fpcr >> 22) & 3);
+}
+
+void fesetround_thunk(tsugiki_state* s, const Stub&) {
+    int64_t mode = int32_t(s->x[0]);
+    if (mode < 0 || mode > 3) {
+        ret(s, s->x[30], uint64_t(-1));
+        return;
+    }
+    ts_set_fpcr(s, (s->fpcr & ~(3u << 22)) | uint32_t(mode << 22));
+    ret(s, s->x[30], 0);
+}
+
+void feclearexcept_thunk(tsugiki_state* s, const Stub&) {
+    set_fpsr(s, get_fpsr(s) & ~(uint32_t(s->x[0]) & fe_all));
+    ret(s, s->x[30], 0);
+}
+
+void feraiseexcept_thunk(tsugiki_state* s, const Stub&) {
+    set_fpsr(s, get_fpsr(s) | (uint32_t(s->x[0]) & fe_all));
+    ret(s, s->x[30], 0);
+}
+
+void fetestexcept_thunk(tsugiki_state* s, const Stub&) {
+    ret(s, s->x[30], get_fpsr(s) & uint32_t(s->x[0]) & fe_all);
+}
+
+// fexcept_t is 4 bytes on arm64, 2 on x86
+void fegetexceptflag_thunk(tsugiki_state* s, const Stub&) {
+    *ptr<uint32_t>(s->x[0]) = get_fpsr(s) & uint32_t(s->x[1]) & fe_all;
+    ret(s, s->x[30], 0);
+}
+
+void fesetexceptflag_thunk(tsugiki_state* s, const Stub&) {
+    uint32_t which = uint32_t(s->x[1]) & fe_all;
+    set_fpsr(s, (get_fpsr(s) & ~which) | (*ptr<uint32_t>(s->x[0]) & which));
+    ret(s, s->x[30], 0);
+}
+
+// arm64 bionic can't trap on these
+void feenableexcept_thunk(tsugiki_state* s, const Stub&) {
+    ret(s, s->x[30], uint64_t(-1));
+}
+
+void fe_zero_thunk(tsugiki_state* s, const Stub&) {
+    ret(s, s->x[30], 0);
+}
+
+// a guest canary died, say where before bionic aborts
+void stack_chk_fail_thunk(tsugiki_state* s, const Stub&) {
+    uint64_t at = s->x[30];
+    Dl_info info{};
+    if (guest_dladdr(at, &info) && info.dli_fname) {
+        __android_log_print(ANDROID_LOG_FATAL, "tsugiki", "guest stack corruption, back to %s+0x%llx (%s)", info.dli_fname,
+                            (unsigned long long)(at - reinterpret_cast<uint64_t>(info.dli_fbase)), info.dli_sname ? info.dli_sname : "?");
+    } else {
+        __android_log_print(ANDROID_LOG_FATAL, "tsugiki", "guest stack corruption, back to 0x%llx", (unsigned long long)at);
+    }
+    dump_recent_calls();
+    __stack_chk_fail();
+}
+
 struct Special {
     const char* name;
     void (*call)(tsugiki_state*, const Stub&);
@@ -834,10 +1053,87 @@ const Special specials[] = {
     {"sigaction", sigaction_thunk},
     {"sigaction64", sigaction_thunk},
     {"signal", signal_thunk},
+    {"__stack_chk_fail", stack_chk_fail_thunk},
+    {"open", open_thunk},
+    {"open64", open_thunk},
+    {"__open_2", open_thunk},
+    {"openat", openat_thunk},
+    {"openat64", openat_thunk},
+    {"__openat_2", openat_thunk},
+    {"fcntl", fcntl_thunk},
+    {"fcntl64", fcntl_thunk},
+    {"pipe2", pipe2_thunk},
+    {"fegetenv", fegetenv_thunk},
+    {"fesetenv", fesetenv_thunk},
+    {"feholdexcept", feholdexcept_thunk},
+    {"feupdateenv", feupdateenv_thunk},
+    {"fegetround", fegetround_thunk},
+    {"fesetround", fesetround_thunk},
+    {"feclearexcept", feclearexcept_thunk},
+    {"feraiseexcept", feraiseexcept_thunk},
+    {"fetestexcept", fetestexcept_thunk},
+    {"fegetexceptflag", fegetexceptflag_thunk},
+    {"fesetexceptflag", fesetexceptflag_thunk},
+    {"feenableexcept", feenableexcept_thunk},
+    {"fedisableexcept", fe_zero_thunk},
+    {"fegetexcept", fe_zero_thunk},
     {"bsd_signal", signal_thunk},
 };
 
 }  // namespace
+
+// arm64 has O_DIRECTORY and O_NOFOLLOW where x86 has O_DIRECT and O_LARGEFILE, and back
+uint64_t host_open_flags(uint64_t g) {
+    uint64_t h = g & ~uint64_t(0x3c000);
+    if (g & 0x4000) h |= 0x10000;
+    if (g & 0x8000) h |= 0x20000;
+    if (g & 0x10000) h |= 0x4000;
+    if (g & 0x20000) h |= 0x8000;
+    return h;
+}
+
+uint64_t guest_open_flags(uint64_t h) {
+    uint64_t g = h & ~uint64_t(0x3c000);
+    if (h & 0x10000) g |= 0x4000;
+    if (h & 0x20000) g |= 0x8000;
+    if (h & 0x4000) g |= 0x10000;
+    if (h & 0x8000) g |= 0x20000;
+    return g;
+}
+
+long guest_syscall(uint64_t arm, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f) {
+    long number = host_syscall_number(arm);
+    if (number < 0) {
+        log("syscall %llu has no x86_64 number here", (unsigned long long)arm);
+        return -ENOSYS;
+    }
+    switch (arm) {
+    case 25:  // fcntl
+        if (b == F_SETFL) c = host_open_flags(c);
+        break;
+    case 56:  // openat
+        c = host_open_flags(c);
+        break;
+    case 59:  // pipe2
+        b = host_open_flags(b);
+        break;
+    case 79:  // newfstatat and fstat, x86's struct stat is bigger
+    case 80: {
+        struct stat h;
+        long r = arm == 79 ? raw_syscall(number, a, b, reinterpret_cast<uint64_t>(&h), d, 0, 0)
+                           : raw_syscall(number, a, reinterpret_cast<uint64_t>(&h), 0, 0, 0, 0);
+        stat_out(r == 0 ? 0 : -1, h, arm == 79 ? c : b);
+        return r;
+    }
+    default:
+        break;
+    }
+    long r = raw_syscall(number, a, b, c, d, e, f);
+    if (arm == 25 && b == F_GETFL && r >= 0) {
+        r = long(guest_open_flags(uint64_t(r)));
+    }
+    return r;
+}
 
 uint64_t special_import(const std::string& name) {
     static std::mutex lock;

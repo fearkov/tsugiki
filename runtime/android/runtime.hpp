@@ -25,6 +25,8 @@ uint64_t make_stub(const Stub& stub);
 
 // an import's host function, called with guest registers in place
 void generic_call(tsugiki_state* s, const Stub& stub);
+// logs the last imports this thread went through generic_call with
+void dump_recent_calls();
 
 // whatever a guest import resolves to by name, 0 if nothing
 uint64_t special_import(const std::string& name);
@@ -102,6 +104,11 @@ GuestVaList va(uint64_t pointer);
 
 // x86_64 number for an arm64 syscall, -1 if we don't know it
 long host_syscall_number(uint64_t arm);
+// a syscall by its arm64 number, -errno like the kernel, flags and structs that differ converted
+long guest_syscall(uint64_t arm, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f);
+// open flags: arm64 has O_DIRECTORY and O_NOFOLLOW where x86 has O_DIRECT and O_LARGEFILE
+uint64_t host_open_flags(uint64_t guest);
+uint64_t guest_open_flags(uint64_t host);
 
 [[noreturn]] void fail(const char* what, ...);
 void log(const char* what, ...);

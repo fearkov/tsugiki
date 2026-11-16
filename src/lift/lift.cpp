@@ -536,7 +536,7 @@ private:
         switch (reg) {
         case tpidr: line("s->tpidr = " + value + ";"); return;
         case nzcv: line("ts_nzcv(&fl, (uint32_t)(" + value + " >> 28));"); return;
-        case fpcr: line("s->fpcr = (uint32_t)" + value + ";"); return;
+        case fpcr: line("ts_set_fpcr(s, " + value + ");"); return;
         case fpsr: line("s->fpsr = (uint32_t)" + value + ";"); return;
         default: line("tsugiki_msr(s, " + std::to_string(reg) + ", " + value + ");"); return;
         }

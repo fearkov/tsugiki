@@ -220,6 +220,12 @@ void bridge() {
     CHECK(get<int (*)()>(lib, "bridge_epoll")() == 1);
     CHECK(get<long (*)(int)>(lib, "bridge_dlsym")(20) == 6765);
     CHECK(get<int (*)()>(lib, "bridge_signal")() == 1);
+    int fenv = get<int (*)()>(lib, "bridge_fenv")();
+    std::printf("bridge_fenv: %x\n", fenv);
+    CHECK(fenv == 0x1f);
+    int flags = get<int (*)(const char*, const char*)>(lib, "bridge_open_flags")("/data/local/tmp/tsugiki/check", "/data/local/tmp/tsugiki/link");
+    std::printf("bridge_open_flags: %x\n", flags);
+    CHECK(flags == 0xf);
     lldiv_t d = get<lldiv_t (*)(long long, long long)>(lib, "bridge_lldiv")(-1000000000007LL, 13);
     CHECK(d.quot == -1000000000007LL / 13 && d.rem == -1000000000007LL % 13);
 }

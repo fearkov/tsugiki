@@ -7,30 +7,10 @@
 
 using namespace tsugiki::rt;
 
-namespace {
-
-// the kernel's own return, -errno and all
-long raw_syscall(long number, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f) {
-    long result;
-    register uint64_t r10 asm("r10") = d;
-    register uint64_t r8 asm("r8") = e;
-    register uint64_t r9 asm("r9") = f;
-    asm volatile("syscall" : "=a"(result) : "a"(number), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory");
-    return result;
-}
-
-}  // namespace
-
 extern "C" {
 
 void tsugiki_svc(tsugiki_state* s, uint32_t) {
-    long number = host_syscall_number(s->x[8]);
-    if (number < 0) {
-        log("svc %llu has no x86_64 number here", (unsigned long long)s->x[8]);
-        s->x[0] = uint64_t(-38);  // -ENOSYS
-        return;
-    }
-    s->x[0] = uint64_t(raw_syscall(number, s->x[0], s->x[1], s->x[2], s->x[3], s->x[4], s->x[5]));
+    s->x[0] = uint64_t(guest_syscall(s->x[8], s->x[0], s->x[1], s->x[2], s->x[3], s->x[4], s->x[5]));
 }
 
 uint64_t tsugiki_mrs(tsugiki_state*, uint32_t reg) {

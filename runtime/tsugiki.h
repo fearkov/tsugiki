@@ -58,6 +58,9 @@ struct tsugiki_module {
     uint64_t image_size;
     // the runtime's, null until loaded
     void* loaded;
+    // bss in the translated .so the image goes into, so cfi sees guest code inside a library
+    uint8_t* space;
+    uint64_t space_size;
 };
 
 // the runtime builds with hidden visibility, only this api is exported
@@ -103,6 +106,20 @@ static inline void ts_flags_out(tsugiki_state* s, tsugiki_flags f) {
     s->zf = f.zf;
     s->cf = f.cf;
     s->vf = f.vf;
+}
+
+// fpcr writes: rounding and flush to zero go to mxcsr too, the host does the math
+static inline void ts_set_fpcr(tsugiki_state* s, uint64_t v) {
+    s->fpcr = (uint32_t)v;
+#if defined(__x86_64__)
+    unsigned rm = (unsigned)(v >> 22) & 3;
+    // arm64 has up then down, x86 down then up
+    unsigned x86 = rm == 1 ? 2 : rm == 2 ? 1 : rm;
+    unsigned m = __builtin_ia32_stmxcsr();
+    m = (m & ~0x6000u) | (x86 << 13);
+    m = (v & (1u << 24)) ? (m | 0x8040u) : (m & ~0x8040u);
+    __builtin_ia32_ldmxcsr(m);
+#endif
 }
 
 static inline uint64_t ts_adds64(tsugiki_flags* __restrict s, uint64_t a, uint64_t b, uint64_t carry) {

@@ -54,16 +54,17 @@ constexpr uint64_t stub_size = 16;
 constexpr uint64_t most_stubs = 1 << 16;
 
 struct Stubs {
+    alignas(4096) static inline uint8_t space[most_stubs * stub_size];
     uint64_t base = 0;
     std::vector<Stub> all;
     std::mutex lock;
     Stubs() {
-        // never mapped readable, just unique addresses no code lives at
-        void* region = mmap(nullptr, most_stubs * stub_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (region == MAP_FAILED) {
+        // never readable, just unique addresses no code lives at;
+        // in our own bss so cfi checks let the host call them
+        if (mprotect(space, sizeof space, PROT_NONE) != 0) {
             fail("can't reserve stub addresses");
         }
-        base = reinterpret_cast<uint64_t>(region);
+        base = reinterpret_cast<uint64_t>(space);
         all.reserve(most_stubs);
         // stub 0 is where returns to the host land
         all.push_back({nullptr, nullptr, 0, "stop"});
@@ -440,6 +441,18 @@ bool traced(const char* name) {
 
 }  // namespace
 
+// the last imports this thread called, for crash reports
+thread_local const char* recent_calls[16];
+thread_local unsigned recent_next;
+
+void dump_recent_calls() {
+    for (unsigned i = 0; i < 16; ++i) {
+        if (const char* name = recent_calls[(recent_next + i) % 16]) {
+            __android_log_print(ANDROID_LOG_FATAL, "tsugiki", "  called %s", name);
+        }
+    }
+}
+
 // six ints in registers, the guest's x6 x7 and stack words on the host stack, doubles in xmm0..7;
 // rax:rdx and xmm0:xmm1 come back, for 16-byte structs too
 void generic_call(tsugiki_state* s, const Stub& stub) {
@@ -458,6 +471,7 @@ void generic_call(tsugiki_state* s, const Stub& stub) {
     }
     c.stack = extra;
     c.count = 16;
+    recent_calls[recent_next++ % 16] = stub.name;
     bool trace = traced(stub.name);
     if (trace) {
         __android_log_print(ANDROID_LOG_INFO, "tsugiki", "%s(%llx, %llx, %llx, %llx, %llx, %llx | %llx %llx %llx %llx)", stub.name,
@@ -667,9 +681,13 @@ extern "C" void tsugiki_load(tsugiki_module* m) {
     }
     constexpr uint64_t align = 0x10000;
     uint64_t size = (end + align - 1) & ~(align - 1);
-    void* raw = mmap(nullptr, size + align, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (raw == MAP_FAILED) {
-        fail("%s: no memory for the image", m->soname);
+    // the bss the build made for it, cfi checks in system libs only let calls into libraries through
+    void* raw = m->space;
+    if (!raw || m->space_size < size + align) {
+        raw = mmap(nullptr, size + align, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (raw == MAP_FAILED) {
+            fail("%s: no memory for the image", m->soname);
+        }
     }
     uint64_t base = (reinterpret_cast<uint64_t>(raw) + align - 1) & ~(align - 1);
     for (const elf::Segment& s : lib.segments()) {
