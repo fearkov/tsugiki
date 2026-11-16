@@ -1159,7 +1159,7 @@ std::vector<std::string> emit_parts(const Program& program, const std::string& i
     // one part keeps everything static; split, they see each other across files, hidden from the outside
     bool split = groups.size() > 1;
     std::string storage = split ? "__attribute__((visibility(\"hidden\"))) void " : "static void ";
-    std::string space = "tsugiki_" + id;
+    std::string space = "tsugiki_lib_" + id;
     std::vector<std::string> parts;
     for (size_t p = 0; p < groups.size(); ++p) {
         std::ostringstream body;
