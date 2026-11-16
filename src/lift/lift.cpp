@@ -126,6 +126,10 @@ public:
         out_ << "    const uint64_t tb = TB;\n";
         // flags live in here; calls and returns don't keep them (aapcs64), so only jumps out write them back
         out_ << "    tsugiki_flags fl = ts_flags_in(s);\n";
+        // calls land on the start almost always, skip the switch's compare tree for them
+        if (function_.entries.size() > 1) {
+            out_ << "    if (__builtin_expect(s->pc == tb + " << hex(function_.start) << ", 1)) goto L_" << name(function_.start) << ";\n";
+        }
         out_ << "    switch (s->pc - tb) {\n";
         for (uint64_t entry : function_.entries) {
             out_ << "    case " << hex(entry) << ": goto L_" << name(entry) << ";\n";
@@ -1340,7 +1344,8 @@ std::vector<std::string> emit_parts(const Program& program, const std::string& i
         std::ostringstream out;
         out << "// made by tsugiki, don't edit\n";
         out << "#include \"tsugiki.h\"\n\n";
-        out << "extern \"C\" uint64_t tsugiki_base_" << id << ";\n";
+        // hidden: one rip-relative load per call, not the got then the value
+        out << "extern \"C\" __attribute__((visibility(\"hidden\"))) uint64_t tsugiki_base_" << id << ";\n";
         out << "#define TB tsugiki_base_" << id << "\n\n";
         out << "#pragma clang diagnostic ignored \"-Wunused-label\"\n\n";
         if (split) {
@@ -1363,7 +1368,7 @@ std::vector<std::string> emit_parts(const Program& program, const std::string& i
             }
             std::sort(entries.begin(), entries.end());
             std::string prefix = split ? space + "::f_" : "f_";
-            out << "extern \"C\" uint64_t tsugiki_base_" << id << " = 0;\n";
+            out << "extern \"C\" __attribute__((visibility(\"hidden\"))) uint64_t tsugiki_base_" << id << " = 0;\n";
             out << "extern \"C\" const tsugiki_entry tsugiki_entries_" << id << "[] = {\n";
             for (auto [entry, function] : entries) {
                 out << "    {" << hex(entry) << ", " << prefix << name(function) << "},\n";
