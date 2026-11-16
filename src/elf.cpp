@@ -196,6 +196,15 @@ bool Library::executable(uint64_t address) const {
     return s && s->executable();
 }
 
+std::optional<uint64_t> Library::section_end(uint64_t address) const {
+    for (auto [start, end] : alloc_sections_) {
+        if (address >= start && address < end) {
+            return end;
+        }
+    }
+    return std::nullopt;
+}
+
 bool Library::code(uint64_t address) const {
     if (code_sections_.empty()) {
         return executable(address);
@@ -237,6 +246,9 @@ void Library::read_sections() {
         // alloc + execinstr
         if ((flags & 6) == 6 && s.size) {
             code_sections_.emplace_back(s.addr, s.addr + s.size);
+        }
+        if ((flags & 2) && s.size) {
+            alloc_sections_.emplace_back(s.addr, s.addr + s.size);
         }
     }
     auto contents = [&](const Section& s) -> std::optional<std::span<const uint8_t>> {

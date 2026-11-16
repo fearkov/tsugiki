@@ -127,6 +127,8 @@ public:
     bool executable(uint64_t address) const;
     // in .text and such, not just the r-x segment, old linkers put .rodata in there too
     bool code(uint64_t address) const;
+    // end of the loaded section holding it, none without section headers
+    std::optional<uint64_t> section_end(uint64_t address) const;
 
     // a pointer slot with relocations applied at base 0
     // none if it points at an import
@@ -176,6 +178,8 @@ private:
     std::vector<Segment> segments_;
     // executable sections, start and end, empty if there are no section headers
     std::vector<std::pair<uint64_t, uint64_t>> code_sections_;
+    // every loaded section, same deal
+    std::vector<std::pair<uint64_t, uint64_t>> alloc_sections_;
 
     uint64_t strtab_ = 0;
     uint64_t strsz_ = 0;

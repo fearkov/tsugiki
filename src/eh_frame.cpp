@@ -123,11 +123,38 @@ public:
         return cies_.emplace(at, cie).first->second;
     }
 
+    // one FDE by the address of its length field, none if it's a CIE
+    std::optional<Fde> fde_at(uint64_t at) {
+        auto bytes = library_.from(at);
+        if (!bytes) {
+            throw Error("eh_frame: FDE outside the file");
+        }
+        Reader r(*bytes, at);
+        uint64_t length = r.u32();
+        if (length == 0xffffffff) {
+            length = r.u64();
+        }
+        if (length < 4 || length > r.left()) {
+            throw Error("eh_frame: FDE runs off the end");
+        }
+        Reader body(bytes->subspan(r.offset(), length), r.position());
+        uint64_t id_at = body.position();
+        uint32_t id = body.u32();
+        if (id == 0) {
+            return std::nullopt;
+        }
+        return fde(body, cie(id_at - id));
+    }
+
     std::vector<Fde> walk(uint64_t start) {
         std::vector<Fde> fdes;
         auto bytes = library_.from(start);
         if (!bytes) {
             throw Error("eh_frame: not in the file");
+        }
+        // old linkers leave out the zero at the end, don't walk into the next section
+        if (auto end = library_.section_end(start); end && *end - start < bytes->size()) {
+            *bytes = bytes->subspan(0, *end - start);
         }
         Reader r(*bytes, start);
         while (r.left() >= 4) {
@@ -240,13 +267,31 @@ std::vector<Fde> read(const elf::Library& library) {
         throw Error("eh_frame_hdr: unknown version");
     }
     uint8_t frame_encoding = r.u8();
-    r.u8();  // fde count encoding
-    r.u8();  // table encoding
+    uint8_t count_encoding = r.u8();
+    uint8_t table_encoding = r.u8();
     auto frame = read_pointer(r, frame_encoding, header->vaddr);
     if (!frame || frame->indirect) {
         throw Error("eh_frame_hdr: no eh_frame pointer");
     }
-    return Walker(library).walk(frame->value);
+    Walker walker(library);
+    // the search table lists every FDE, the same ones the unwinder sees
+    auto count = read_pointer(r, count_encoding, header->vaddr);
+    if (count && table_encoding != pe_omit && count->value <= r.left()) {
+        std::vector<Fde> fdes;
+        for (uint64_t i = 0; i < count->value; ++i) {
+            read_pointer(r, table_encoding, header->vaddr);
+            auto at = read_pointer(r, table_encoding, header->vaddr);
+            if (!at) {
+                throw Error("eh_frame_hdr: hole in the table");
+            }
+            if (auto f = walker.fde_at(at->value)) {
+                fdes.push_back(*f);
+            }
+        }
+        std::sort(fdes.begin(), fdes.end(), [](const Fde& a, const Fde& b) { return a.start < b.start; });
+        return fdes;
+    }
+    return walker.walk(frame->value);
 }
 
 }  // namespace tsugiki::eh_frame
