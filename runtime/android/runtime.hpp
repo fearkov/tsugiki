@@ -27,6 +27,8 @@ uint64_t make_stub(const Stub& stub);
 void generic_call(tsugiki_state* s, const Stub& stub);
 // logs the last imports this thread went through generic_call with
 void dump_recent_calls();
+// logs pc, lr and the x29 frame chain as lib+offset
+void log_guest_backtrace(const tsugiki_state* s);
 
 // whatever a guest import resolves to by name, 0 if nothing
 uint64_t special_import(const std::string& name);

@@ -998,6 +998,7 @@ void stack_chk_fail_thunk(tsugiki_state* s, const Stub&) {
         __android_log_print(ANDROID_LOG_FATAL, "tsugiki", "guest stack corruption, back to 0x%llx", (unsigned long long)at);
     }
     dump_recent_calls();
+    log_guest_backtrace(s);
     __stack_chk_fail();
 }
 

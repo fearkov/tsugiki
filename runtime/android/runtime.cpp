@@ -841,11 +841,54 @@ extern "C" void tsugiki_call(tsugiki_state* s) {
             generic_call(s, stub);
             return;
         }
+        log_guest_backtrace(s);
         fail("nothing to run at 0x%llx (lr 0x%llx)", (unsigned long long)s->pc, (unsigned long long)s->x[30]);
     }
     code(s);
 }
 
+namespace tsugiki::rt {
+
+// lr and the frame chain from x29, lib+offset each, for crash reports
+void log_guest_backtrace(const tsugiki_state* s) {
+    auto one = [](int n, uint64_t at) {
+        Dl_info info{};
+        if (guest_dladdr(at, &info) && info.dli_fname) {
+            __android_log_print(ANDROID_LOG_FATAL, "tsugiki", "  #%02d %s+0x%llx", n, info.dli_fname,
+                                (unsigned long long)(at - reinterpret_cast<uint64_t>(info.dli_fbase)));
+        } else {
+            __android_log_print(ANDROID_LOG_FATAL, "tsugiki", "  #%02d 0x%llx", n, (unsigned long long)at);
+        }
+    };
+    for (int i = 0; i < 32; i += 4) {
+        __android_log_print(ANDROID_LOG_FATAL, "tsugiki", "  x%-2d %016llx %016llx %016llx %016llx", i, (unsigned long long)s->x[i],
+                            (unsigned long long)s->x[i + 1], (unsigned long long)s->x[i + 2], (unsigned long long)s->x[i + 3]);
+    }
+    one(0, s->pc);
+    one(1, s->x[30]);
+    uint64_t fp = s->x[29];
+    for (int n = 2; n < 24 && fp && !(fp & 7); ++n) {
+        Dl_info info{};
+        uint64_t frame[2];
+        // only walk frames on mapped memory we can read
+        if (msync(reinterpret_cast<void*>(fp & ~uint64_t(4095)), 4096, MS_ASYNC) != 0) {
+            break;
+        }
+        std::memcpy(frame, reinterpret_cast<const void*>(fp), 16);
+        if (!frame[1]) {
+            break;
+        }
+        one(n, frame[1]);
+        if (frame[0] <= fp) {
+            break;
+        }
+        fp = frame[0];
+    }
+}
+
+}  // namespace tsugiki::rt
+
 extern "C" void tsugiki_trap(tsugiki_state* s, uint64_t pc, uint32_t raw, const char* why) {
+    log_guest_backtrace(s);
     fail("%s at 0x%llx (0x%08x), lr 0x%llx", why, (unsigned long long)pc, raw, (unsigned long long)s->x[30]);
 }
