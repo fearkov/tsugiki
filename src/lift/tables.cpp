@@ -255,15 +255,31 @@ std::vector<uint64_t> jump_table(const elf::Library& library, const Function& f,
     }
     unsigned bytes = load.access.bytes;
 
+    // the index and whatever it was moved from, a cmp on anything else bounds something else
+    std::set<int> index_regs{load.rm()};
+    for (int reg = load.rm(), hops = 0; hops < 4; ++hops) {
+        auto w = writer(f, *load_at, reg);
+        if (!w || f.code[*w].op != Op::logical_shifted || f.code[*w].bits(30, 29) != 1 || f.code[*w].rn() != 31) {
+            break;
+        }
+        reg = f.code[*w].rm();
+        index_regs.insert(reg);
+    }
+
     // the bound: a cmp on the index a few instructions up, then b.hi or b.hs
     std::optional<uint64_t> count;
     for (size_t j = *load_at; j-- > (*load_at > 32 ? *load_at - 32 : 0);) {
         const Instruction& in = f.code[j];
-        if (in.op == Op::subs_imm && in.rd() == 31) {
+        if (in.op == Op::subs_imm && in.rd() == 31 && index_regs.contains(in.rn())) {
             uint64_t n = uint64_t(in.bits(21, 10)) << (in.bit(22) ? 12 : 0);
             for (size_t k = j + 1; k < f.code.size() && k <= index; ++k) {
-                if (f.code[k].op == Op::b_cond || f.code[k].op == Op::bc_cond) {
-                    unsigned cond = f.code[k].bits(3, 0);
+                const Instruction& next = f.code[k];
+                // a ccmp mixes in some other test, that's no bound
+                if (next.op == Op::ccmp_register || next.op == Op::ccmp_immediate) {
+                    break;
+                }
+                if (next.op == Op::b_cond || next.op == Op::bc_cond) {
+                    unsigned cond = next.bits(3, 0);
                     if (cond == 8 || cond == 9) count = n + 1;
                     if (cond == 2 || cond == 3) count = n;
                     break;
