@@ -17,13 +17,17 @@ Android-x86 as is.
   <br>
   <img src="docs/screenshots/freedoom.jpg" width="366" alt="Freedoom">
   <img src="docs/screenshots/tuxpaint.png" width="366" alt="Tux Paint">
+  <br>
+  <img src="docs/screenshots/revengate.jpg" width="330" alt="Revengate">
+  <img src="docs/screenshots/terratactician.jpg" width="391" alt="TerraTactician Expandoria">
 </p>
 
 The Battle for Wesnoth, Organic Maps, Shattered Pixel Dungeon, Simon Tatham's
-Puzzles, Freedoom and Tux Paint, F-Droid builds that only ship arm64 libraries,
-translated by tsugiki and running on an x86_64 Android 15 emulator that can't
-run arm64 code at all. Wesnoth and Freedoom have no x86_64 build anywhere on
-F-Droid. Map data © OpenStreetMap contributors.
+Puzzles, Freedoom, Tux Paint, Revengate (Godot 4) and TerraTactician Expandoria
+(Rust and Bevy), F-Droid builds that only ship arm64 libraries, translated by
+tsugiki and running on an x86_64 Android 15 emulator that can't run arm64 code
+at all. Wesnoth, Freedoom, Revengate and TerraTactician have no x86_64 build
+anywhere on F-Droid. Map data © OpenStreetMap contributors.
 
 ## Status
 
@@ -34,15 +38,17 @@ Early, but real apps run. What works so far:
 - finding code through `.eh_frame`, symbols, relocations, code pointers and jump
   tables
 - calls both ways between translated code and the x86_64 system: JNI, callbacks,
-  `dlopen`/`dlsym`, raw function pointers, signal handlers, and structs whose
-  layout differs between the two (`stat`, `epoll_event`)
-- C++ exceptions, thread locals, executables shipped as `lib*.so`
+  `dlopen`/`dlsym`, raw function pointers, signal handlers, and the structs and
+  constants that differ between the two (`stat`, `epoll_event`, `fenv_t`, `open`
+  flags)
+- C++ exceptions, thread locals, `long double`, executables shipped as `lib*.so`
+- C, C++ and Rust, including the helpers LLVM's machine outliner makes, which
+  hand condition flags back to their caller
 
 Not yet:
 
 - signal handlers get the x86_64 context, so runtimes that scan the stack from
   one (Mono, Unity) won't work
-- `long double`
 - apps that generate code at run time, like JIT emulators, can't be translated
   ahead of time
 - speed: a tight loop like a CRC runs at native speed, but code full of small
@@ -57,7 +63,8 @@ adb install app-x86_64.apk
 
 `-j n` sets how many compiles run at once, and `--force` translates an APK that
 already has x86_64 libraries anyway. Organic Maps, with 15 MB of arm64 code,
-takes about two minutes with `-j 8`. The APK gets signed with a key of your own,
+takes about two minutes with `-j 8`, and Revengate's 60 MB Godot engine about
+ten. The APK gets signed with a key of your own,
 made once in `~/.local/share/tsugiki`.
 
 ```
