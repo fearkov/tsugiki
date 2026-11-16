@@ -39,11 +39,13 @@ uint64_t host_callback(uint64_t guest_function, int kind);
 // runs a guest function on this thread, nested or not
 struct Call {
     uint64_t ints[8] = {};
-    uint64_t fps[8] = {};
+    // whole vector registers, lo then hi
+    uint64_t fps[8][2] = {};
     // more int args, pushed on the guest stack
     const uint64_t* stack = nullptr;
     int stack_count = 0;
 };
+// fp_result gets all of v0, two words
 uint64_t run_guest(uint64_t function, const Call& call, uint64_t* fp_result = nullptr);
 
 // the guest's view of jni

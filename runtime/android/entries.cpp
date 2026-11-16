@@ -1,4 +1,5 @@
 // the c++ side of entry.S: exports and callbacks into guest code
+#include <cstddef>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -16,13 +17,14 @@ namespace {
 
 struct Frame {
     uint64_t ints[6];
-    uint64_t fps[8];
+    uint64_t fps[8][2];
     tsugiki_module* module;
     uint64_t vaddr;
     const uint64_t* stack;
     uint64_t kind;
-    uint64_t fp_result;
+    uint64_t fp_result[2];
 };
+static_assert(offsetof(Frame, module) == 176 && offsetof(Frame, fp_result) == 208);
 
 struct Slot {
     uint64_t guest;
@@ -92,7 +94,10 @@ extern "C" uint64_t tsugiki_enter(Frame* f) {
     // the host's 7th and 8th ints are on its stack, the guest's in x6 and x7
     call.ints[6] = f->stack[0];
     call.ints[7] = f->stack[1];
-    for (int i = 0; i < 8; ++i) call.fps[i] = f->fps[i];
+    for (int i = 0; i < 8; ++i) {
+        call.fps[i][0] = f->fps[i][0];
+        call.fps[i][1] = f->fps[i][1];
+    }
     call.stack = f->stack + 2;
     call.stack_count = 8;
     if (kind == jni_env) {
@@ -100,5 +105,5 @@ extern "C" uint64_t tsugiki_enter(Frame* f) {
     } else if (kind == jni_vm) {
         call.ints[0] = guest_vm(reinterpret_cast<void*>(call.ints[0]));
     }
-    return run_guest(function, call, &f->fp_result);
+    return run_guest(function, call, f->fp_result);
 }

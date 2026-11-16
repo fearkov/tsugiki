@@ -226,6 +226,12 @@ void bridge() {
     int flags = get<int (*)(const char*, const char*)>(lib, "bridge_open_flags")("/data/local/tmp/tsugiki/check", "/data/local/tmp/tsugiki/link");
     std::printf("bridge_open_flags: %x\n", flags);
     CHECK(flags == 0xf);
+    char quad[160], native_quad[160];
+    int close_to_one = get<int (*)(char*, int)>(lib, "bridge_long_double")(quad, sizeof quad);
+    long double third = strtold("0.333333333333333333333333333333333", nullptr);
+    std::snprintf(native_quad, sizeof native_quad, "%.30Lf %.30Lf", sqrtl(2.0L), third + third + third);
+    std::printf("bridge_long_double: %s (native %s)\n", quad, native_quad);
+    CHECK(close_to_one == 1 && std::strcmp(quad, native_quad) == 0);
     lldiv_t d = get<lldiv_t (*)(long long, long long)>(lib, "bridge_lldiv")(-1000000000007LL, 13);
     CHECK(d.quot == -1000000000007LL / 13 && d.rem == -1000000000007LL % 13);
 }

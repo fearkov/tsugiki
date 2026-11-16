@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fenv.h>
+#include <math.h>
 #include <signal.h>
 #include <sys/epoll.h>
 #include <sys/stat.h>
@@ -297,4 +298,12 @@ int bridge_open_flags(const char* file, const char* link) {
         close(fd);
     }
     return r;
+}
+
+// long double is an ieee quad on both sides, whole in one vector register
+int bridge_long_double(char* out, int size) {
+    long double third = strtold("0.333333333333333333333333333333333", NULL);
+    long double sum = third + third + third;
+    snprintf(out, size, "%.30Lf %.30Lf", sqrtl(2.0L), sum);
+    return sum > 0.99999999999999999999L && sum < 1.00000000000000000001L;
 }

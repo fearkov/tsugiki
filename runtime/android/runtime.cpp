@@ -363,8 +363,8 @@ uint64_t run_guest(uint64_t function, const Call& call, uint64_t* fp_result) {
     s->x[31] = sp;
     for (int i = 0; i < 8; ++i) {
         s->x[i] = call.ints[i];
-        s->v[i].lo = call.fps[i];
-        s->v[i].hi = 0;
+        s->v[i].lo = call.fps[i][0];
+        s->v[i].hi = call.fps[i][1];
     }
     s->x[30] = stop_address();
     s->pc = function;
@@ -373,7 +373,8 @@ uint64_t run_guest(uint64_t function, const Call& call, uint64_t* fp_result) {
     }
     uint64_t result = s->x[0];
     if (fp_result) {
-        *fp_result = s->v[0].lo;
+        fp_result[0] = s->v[0].lo;
+        fp_result[1] = s->v[0].hi;
     }
     --t.depth;
     if (saved) {
@@ -388,15 +389,16 @@ uint64_t run_guest(uint64_t function, const Call& call, uint64_t* fp_result) {
 
 namespace {
 
+// whole vector registers both ways, long double is a quad in one xmm on x86_64 android too
 struct HostCall {
     uint64_t ints[6];
-    uint64_t fps[8];
+    uint64_t fps[8][2];
     const uint64_t* stack;
     uint64_t count;
     uint64_t rax, rdx;
     uint64_t xmm0[2], xmm1[2];
 };
-static_assert(offsetof(HostCall, stack) == 112 && offsetof(HostCall, rax) == 128 && offsetof(HostCall, xmm1) == 160);
+static_assert(offsetof(HostCall, stack) == 176 && offsetof(HostCall, rax) == 192 && offsetof(HostCall, xmm1) == 224);
 
 }  // namespace
 
@@ -463,7 +465,8 @@ void generic_call(tsugiki_state* s, const Stub& stub) {
         c.ints[i] = host_view(s->x[i]);
     }
     for (int i = 0; i < 8; ++i) {
-        c.fps[i] = s->v[i].lo;
+        c.fps[i][0] = s->v[i].lo;
+        c.fps[i][1] = s->v[i].hi;
     }
     uint64_t extra[16];
     for (int i = 0; i < 16; ++i) {
@@ -477,8 +480,8 @@ void generic_call(tsugiki_state* s, const Stub& stub) {
         __android_log_print(ANDROID_LOG_INFO, "tsugiki", "%s(%llx, %llx, %llx, %llx, %llx, %llx | %llx %llx %llx %llx)", stub.name,
                             (unsigned long long)c.ints[0], (unsigned long long)c.ints[1], (unsigned long long)c.ints[2],
                             (unsigned long long)c.ints[3], (unsigned long long)c.ints[4], (unsigned long long)c.ints[5],
-                            (unsigned long long)c.fps[0], (unsigned long long)c.fps[1], (unsigned long long)c.fps[2],
-                            (unsigned long long)c.fps[3]);
+                            (unsigned long long)c.fps[0][0], (unsigned long long)c.fps[1][0], (unsigned long long)c.fps[2][0],
+                            (unsigned long long)c.fps[3][0]);
     }
     tsugiki_host_call(stub.host, &c);
     if (trace) {
@@ -487,9 +490,9 @@ void generic_call(tsugiki_state* s, const Stub& stub) {
     s->x[0] = c.rax;
     s->x[1] = c.rdx;
     s->v[0].lo = c.xmm0[0];
-    s->v[0].hi = 0;
+    s->v[0].hi = c.xmm0[1];
     s->v[1].lo = c.xmm1[0];
-    s->v[1].hi = 0;
+    s->v[1].hi = c.xmm1[1];
     s->pc = back;
 }
 
