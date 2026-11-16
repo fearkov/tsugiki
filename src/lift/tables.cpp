@@ -83,6 +83,42 @@ std::optional<size_t> writer(const Function& f, size_t before, int reg) {
 
 std::optional<uint64_t> value(const Function& f, size_t before, int reg, int depth = 0);
 
+// [base, #offset] of an integer ldr/str with an immediate, for stack slots
+struct Slot {
+    int base;
+    int64_t offset;
+    bool operator==(const Slot&) const = default;
+};
+
+std::optional<Slot> slot(const Instruction& in) {
+    if (in.bit(26)) {
+        return std::nullopt;
+    }
+    if (in.op == Op::single_unsigned) {
+        return Slot{in.rn(), int64_t(in.bits(21, 10)) << in.bits(31, 30)};
+    }
+    if (in.op == Op::single_unscaled) {
+        return Slot{in.rn(), text::sign_extend(in.bits(20, 12), 9)};
+    }
+    return std::nullopt;
+}
+
+// the x register an str or stp puts in that slot
+std::optional<int> stored_to(const Instruction& in, Slot want) {
+    if (in.bit(26)) {
+        return std::nullopt;
+    }
+    if (in.bits(31, 30) == 3 && in.bits(23, 22) == 0 && slot(in) == want) {
+        return in.rt();
+    }
+    if (in.op == Op::pair_offset && in.bits(31, 30) == 2 && !in.bit(22) && in.rn() == want.base) {
+        int64_t offset = text::sign_extend(in.bits(21, 15), 7) * 8;
+        if (offset == want.offset) return in.rt();
+        if (offset + 8 == want.offset) return in.rt2();
+    }
+    return std::nullopt;
+}
+
 // what the instruction at j leaves in its rd
 std::optional<uint64_t> produced(const Function& f, size_t j, int depth) {
     if (depth > 8) {
@@ -120,6 +156,20 @@ std::optional<uint64_t> produced(const Function& f, size_t j, int depth) {
         return std::nullopt;
     case Op::movz:
         return uint64_t(in.bits(20, 5)) << (16 * in.bits(22, 21));
+    case Op::single_unsigned:
+    case Op::single_unscaled: {
+        // a table base spilled to the stack, it's whatever got stored there last
+        auto from = slot(in);
+        if (!from || in.bits(31, 30) != 3 || in.bits(23, 22) != 1) {
+            return std::nullopt;
+        }
+        for (size_t k = j; k-- > 0;) {
+            if (auto stored = stored_to(f.code[k], *from)) {
+                return value(f, k, *stored, depth + 1);
+            }
+        }
+        return std::nullopt;
+    }
     default:
         return std::nullopt;
     }
