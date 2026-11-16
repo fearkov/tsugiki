@@ -34,6 +34,8 @@ struct Program {
     std::vector<Function> functions;
     // start -> index into functions
     std::map<uint64_t, size_t> starts;
+    // plt stub -> the function of ours its got slot holds, calls skip the stub and the dispatcher
+    std::map<uint64_t, uint64_t> plt;
 };
 
 Program discover(const elf::Library& library);

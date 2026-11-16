@@ -284,6 +284,16 @@ private:
         case Op::bl: {
             uint64_t target = *branch_target(in, pc_);
             line("s->x[30] = tb + " + hex(next_) + ";");
+            if (auto plt = program_.plt.find(target); plt != program_.plt.end()) {
+                // what the stub would leave in x16 and x17, then straight to the function
+                const Function& stub = program_.functions[program_.starts.at(target)];
+                uint64_t slot = (target & ~uint64_t(0xfff)) +
+                                uint64_t(sign_extend((stub.code[0].bits(23, 5) << 2) | stub.code[0].bits(30, 29), 21) << 12) +
+                                (uint64_t(stub.code[1].bits(21, 10)) << 3);
+                line("s->x[16] = tb + " + hex(slot) + ";");
+                line("s->x[17] = tb + " + hex(plt->second) + ";");
+                target = plt->second;
+            }
             line("s->pc = tb + " + hex(target) + ";");
             auto callee = program_.starts.find(target);
             if (callee == program_.starts.end() || program_.functions[callee->second].flags_in) {
@@ -980,6 +990,10 @@ void flag_flow(Program& program) {
         }
     }
     auto callee_of = [&](uint64_t target) -> Function* {
+        // calls through our own plt stubs land on the function itself
+        if (auto plt = program.plt.find(target); plt != program.plt.end()) {
+            target = plt->second;
+        }
         auto it = program.starts.find(target);
         return it == program.starts.end() ? nullptr : &program.functions[it->second];
     };
@@ -1299,6 +1313,22 @@ Program discover(const elf::Library& library) {
             if (*target > g.start && *target < g.end) {
                 g.entries.insert(*target);
             }
+        }
+    }
+    // plt stubs for our own exported functions: adrp x16; ldr x17, [x16, #o]; add x16, x16, #o; br x17
+    for (const Function& f : program.functions) {
+        if (f.code.size() < 4) {
+            continue;
+        }
+        const Instruction &adrp = f.code[0], &ldr = f.code[1], &add = f.code[2], &br = f.code[3];
+        if (adrp.op != Op::adrp || adrp.rd() != 16 || ldr.op != Op::single_unsigned || ldr.raw >> 22 != 0x3e5 || ldr.rn() != 16 ||
+            ldr.rt() != 17 || add.op != Op::add_imm || add.rd() != 16 || add.rn() != 16 || br.op != Op::br || br.rn() != 17) {
+            continue;
+        }
+        int64_t page = sign_extend((adrp.bits(23, 5) << 2) | adrp.bits(30, 29), 21) << 12;
+        uint64_t slot = (f.start & ~uint64_t(0xfff)) + uint64_t(page) + (uint64_t(ldr.bits(21, 10)) << 3);
+        if (auto target = library.pointer(slot); target && program.starts.contains(*target)) {
+            program.plt[f.start] = *target;
         }
     }
     flag_flow(program);
