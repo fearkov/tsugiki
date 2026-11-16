@@ -9,17 +9,21 @@ result is a plain x86_64 APK that installs on Waydroid, the emulator or
 Android-x86 as is.
 
 <p align="center">
+  <img src="docs/screenshots/wesnoth.jpg" width="740" alt="The Battle for Wesnoth">
+  <br>
   <img src="docs/screenshots/organicmaps.png" height="480" alt="Organic Maps">
   <img src="docs/screenshots/spd.png" height="480" alt="Shattered Pixel Dungeon">
   <img src="docs/screenshots/sgtpuzzles.png" height="480" alt="Simon Tatham's Puzzles">
   <br>
-  <img src="docs/screenshots/tuxpaint.png" width="740" alt="Tux Paint">
+  <img src="docs/screenshots/freedoom.jpg" width="366" alt="Freedoom">
+  <img src="docs/screenshots/tuxpaint.png" width="366" alt="Tux Paint">
 </p>
 
-Organic Maps, Shattered Pixel Dungeon, Simon Tatham's Puzzles and Tux Paint,
-F-Droid builds that only ship arm64 libraries, translated by tsugiki and running
-on an x86_64 Android 15 emulator that can't run arm64 code at all. Map data ©
-OpenStreetMap contributors.
+The Battle for Wesnoth, Organic Maps, Shattered Pixel Dungeon, Simon Tatham's
+Puzzles, Freedoom and Tux Paint, F-Droid builds that only ship arm64 libraries,
+translated by tsugiki and running on an x86_64 Android 15 emulator that can't
+run arm64 code at all. Wesnoth and Freedoom have no x86_64 build anywhere on
+F-Droid. Map data © OpenStreetMap contributors.
 
 ## Status
 
