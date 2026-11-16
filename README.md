@@ -8,18 +8,57 @@ an app's `lib/arm64-v8a/*.so` ahead of time into x86_64 libraries instead, so th
 result is a plain x86_64 APK that installs on Waydroid, the emulator or
 Android-x86 as is.
 
+<p align="center">
+  <img src="docs/screenshots/organicmaps.png" height="480" alt="Organic Maps">
+  <img src="docs/screenshots/spd.png" height="480" alt="Shattered Pixel Dungeon">
+  <img src="docs/screenshots/sgtpuzzles.png" height="480" alt="Simon Tatham's Puzzles">
+  <br>
+  <img src="docs/screenshots/tuxpaint.png" width="740" alt="Tux Paint">
+</p>
+
+Organic Maps, Shattered Pixel Dungeon, Simon Tatham's Puzzles and Tux Paint,
+F-Droid builds that only ship arm64 libraries, translated by tsugiki and running
+on an x86_64 Android 15 emulator that can't run arm64 code at all. Map data ©
+OpenStreetMap contributors.
+
 ## Status
 
-Early. What works so far:
+Early, but real apps run. What works so far:
 
-- reading APKs and their arm64 libraries
-- ELF: segments, dynamic table, symbols, relocations as RELA, RELR (standard and
-  Android tags) and Android's packed APS2
-- function ranges from `.eh_frame`
+- integer, FP and AdvSIMD code, one C++ function per guest function, built with
+  the NDK into an x86_64 library that carries the original image
+- finding code through `.eh_frame`, symbols, relocations, code pointers and jump
+  tables
+- calls both ways between translated code and the x86_64 system: JNI, callbacks,
+  `dlopen`/`dlsym`, raw function pointers, signal handlers, and structs whose
+  layout differs between the two (`stat`, `epoll_event`)
+- C++ exceptions, thread locals, executables shipped as `lib*.so`
+
+Not yet:
+
+- signal handlers get the x86_64 context, so runtimes that scan the stack from
+  one (Mono, Unity) won't work
+- `long double`
+- apps that generate code at run time, like JIT emulators, can't be translated
+  ahead of time
+- speed: a tight loop like a CRC runs at native speed, but code full of small
+  calls is about five times slower for now
+
+## Usage
 
 ```
-tsugiki info app.apk
-tsugiki info libgame.so
+tsugiki apk app.apk -o app-x86_64.apk
+adb install app-x86_64.apk
+```
+
+`-j n` sets how many compiles run at once, and `--force` translates an APK that
+already has x86_64 libraries anyway. Organic Maps, with 15 MB of arm64 code,
+takes about two minutes with `-j 8`. The APK gets signed with a key of your own,
+made once in `~/.local/share/tsugiki`.
+
+```
+tsugiki info app.apk          # libraries, functions, jump tables
+tsugiki build lib*.so -o out  # just the x86_64 libraries
 ```
 
 ## Building
@@ -32,6 +71,11 @@ cmake -S . -B build
 make -C build -j
 ./build/tests/tsugiki_tests
 ```
+
+Translating needs the Android NDK (`ANDROID_NDK_HOME` or the newest one in
+`~/Android/Sdk/ndk`), and making APKs needs the SDK's build-tools and openssl.
+`tests/android/run.sh` checks translated code against native builds on a device
+or emulator.
 
 ## Note
 
