@@ -11,9 +11,10 @@ Android-x86 as is.
 <p align="center">
   <img src="docs/screenshots/wesnoth.jpg" width="740" alt="The Battle for Wesnoth">
   <br>
-  <img src="docs/screenshots/organicmaps.png" height="480" alt="Organic Maps">
-  <img src="docs/screenshots/spd.png" height="480" alt="Shattered Pixel Dungeon">
-  <img src="docs/screenshots/sgtpuzzles.png" height="480" alt="Simon Tatham's Puzzles">
+  <img src="docs/screenshots/organicmaps.png" height="400" alt="Organic Maps">
+  <img src="docs/screenshots/gcompris.jpg" height="400" alt="GCompris">
+  <img src="docs/screenshots/spd.png" height="400" alt="Shattered Pixel Dungeon">
+  <img src="docs/screenshots/sgtpuzzles.png" height="400" alt="Simon Tatham's Puzzles">
   <br>
   <img src="docs/screenshots/freedoom.jpg" width="366" alt="Freedoom">
   <img src="docs/screenshots/tuxpaint.png" width="366" alt="Tux Paint">
@@ -22,12 +23,13 @@ Android-x86 as is.
   <img src="docs/screenshots/terratactician.jpg" width="391" alt="TerraTactician Expandoria">
 </p>
 
-The Battle for Wesnoth, Organic Maps, Shattered Pixel Dungeon, Simon Tatham's
-Puzzles, Freedoom, Tux Paint, Revengate (Godot 4) and TerraTactician Expandoria
-(Rust and Bevy), F-Droid builds that only ship arm64 libraries, translated by
-tsugiki and running on an x86_64 Android 15 emulator that can't run arm64 code
-at all. Wesnoth, Freedoom, Revengate and TerraTactician have no x86_64 build
-anywhere on F-Droid. Map data © OpenStreetMap contributors.
+The Battle for Wesnoth, Organic Maps, GCompris (Qt 6), Shattered Pixel Dungeon,
+Simon Tatham's Puzzles, Freedoom, Tux Paint, Revengate (Godot 4) and
+TerraTactician Expandoria (Rust and Bevy), F-Droid builds that only ship arm64
+libraries, translated by tsugiki and running on an x86_64 Android 15 emulator
+that can't run arm64 code at all. Wesnoth, GCompris, Freedoom, Revengate and
+TerraTactician have no x86_64 build anywhere on F-Droid. Map data ©
+OpenStreetMap contributors.
 
 ## Status
 
@@ -44,6 +46,10 @@ Early, but real apps run. What works so far:
 - C++ exceptions, thread locals, `long double`, executables shipped as `lib*.so`
 - C, C++ and Rust, including the helpers LLVM's machine outliner makes, which
   hand condition flags back to their caller
+- Qt 6 apps: their per-ABI library lists get pointed at x86_64, and code that
+  reads its own `.so` files sees the arm64 originals
+- JITs that can fall back, like QML's and PCRE2's, are refused executable memory
+  and interpret instead
 
 Not yet:
 
