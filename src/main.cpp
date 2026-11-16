@@ -146,6 +146,16 @@ void describe(const elf::Library& library) {
         std::cout << ", " << missed.size() << " look like tables but aren't, like " << hex(missed[0]);
     }
     std::cout << "\n";
+    size_t flags_in = 0, flags_out = 0, flags_after = 0;
+    for (const lift::Function& f : program.functions) {
+        flags_in += f.flags_in;
+        flags_out += f.flags_out;
+        flags_after += f.flags_after.size();
+    }
+    if (flags_in || flags_out) {
+        std::cout << "  flags across calls: " << flags_in << " functions read the caller's, " << flags_out << " hand them back to "
+                  << flags_after << " calls\n";
+    }
     if (library.init || !library.init_array.empty() || !library.preinit_array.empty()) {
         std::cout << "  init: " << library.init_array.size() << " in init_array" << (library.init ? ", DT_INIT" : "") << "\n";
     }

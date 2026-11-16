@@ -126,3 +126,42 @@ uint64_t K(collatz)(uint64_t n) {
     }
     return steps;
 }
+
+// llvm's machine outliner passes nzcv across a bl both ways, aapcs64 or not:
+// flags_back gets them from its helper, flags_into hands its own to one
+#ifndef NATIVE
+__asm__(
+    ".text\n"
+    ".p2align 2\n"
+    ".type compare_outlined, %function\n"
+    "compare_outlined:\n"
+    "    cmp x0, x1\n"
+    "    ret\n"
+    ".size compare_outlined, . - compare_outlined\n"
+    ".globl flags_back\n"
+    ".type flags_back, %function\n"
+    "flags_back:\n"
+    "    mov x9, x30\n"
+    "    bl compare_outlined\n"
+    "    mov x30, x9\n"
+    "    cset x0, lt\n"
+    "    ret\n"
+    ".size flags_back, . - flags_back\n"
+    ".type select_outlined, %function\n"
+    "select_outlined:\n"
+    "    csel x0, x0, x1, gt\n"
+    "    ret\n"
+    ".size select_outlined, . - select_outlined\n"
+    ".globl flags_into\n"
+    ".type flags_into, %function\n"
+    "flags_into:\n"
+    "    mov x9, x30\n"
+    "    cmp x0, x1\n"
+    "    bl select_outlined\n"
+    "    mov x30, x9\n"
+    "    ret\n"
+    ".size flags_into, . - flags_into\n");
+#else
+int64_t native_flags_back(int64_t a, int64_t b) { return a < b; }
+int64_t native_flags_into(int64_t a, int64_t b) { return a > b ? a : b; }
+#endif

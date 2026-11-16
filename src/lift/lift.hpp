@@ -23,6 +23,11 @@ struct Function {
     std::set<uint64_t> entries;
     // br address -> where its jump table goes, all inside
     std::map<uint64_t, std::vector<uint64_t>> tables;
+    // nzcv across calls, which aapcs64 says never happens but llvm's outliner does:
+    // reads its caller's flags, hands flags back on ret, and bl sites reading flags after
+    bool flags_in = false;
+    bool flags_out = false;
+    std::set<uint64_t> flags_after;
 };
 
 struct Program {

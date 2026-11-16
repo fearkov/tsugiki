@@ -20,6 +20,8 @@ extern const uint64_t tsugiki_entry_count_kernels;
 extern uint64_t tsugiki_base_kernels;
 
 uint64_t native_fib(uint64_t);
+int64_t native_flags_back(int64_t, int64_t);
+int64_t native_flags_into(int64_t, int64_t);
 int native_dispatch(int, int);
 int native_through_pointer(int, int);
 int64_t native_divide(int64_t, int64_t);
@@ -77,6 +79,8 @@ TEST(translated_scalar_kernels) {
         int which = int(a % 11) - 1, x = int(int32_t(b) >> (c & 15));
         CHECK_EQ(int(g.call("dispatch", {u(which), u(x)})), native_dispatch(which, x));
         CHECK_EQ(int(g.call("through_pointer", {u(which), u(x)})), native_through_pointer(which, x));
+        CHECK_EQ(g.call("flags_back", {u(sa), u(sb)}), u(native_flags_back(sa, sb)));
+        CHECK_EQ(g.call("flags_into", {u(sa), u(sb)}), u(native_flags_into(sa, sb)));
     }
     for (uint64_t n : {1, 7, 27, 97, 871}) {
         CHECK_EQ(g.call("collatz", {n}), native_collatz(n));

@@ -146,6 +146,16 @@ public:
         out_ << "    ts_flags_out(s, fl);\n    s->pc = tb + " << hex(function_.end) << ";\n    return;\n}\n\n";
     }
 
+    // what an instruction does to nzcv, going by the c++ we write for it
+    std::pair<bool, bool> flag_use(size_t index) {
+        pc_ = function_.start + 4 * index;
+        next_ = pc_ + 4;
+        out_.str("");
+        instruction(function_.code[index]);
+        std::string text = out_.str();
+        return {text.find("fl.") != std::string::npos, text.find("&fl") != std::string::npos};
+    }
+
 private:
     void line(const std::string& text) { out_ << "    " << text << "\n"; }
 
@@ -271,11 +281,18 @@ private:
             uint64_t target = *branch_target(in, pc_);
             line("s->x[30] = tb + " + hex(next_) + ";");
             line("s->pc = tb + " + hex(target) + ";");
-            if (program_.starts.contains(target)) {
+            auto callee = program_.starts.find(target);
+            if (callee == program_.starts.end() || program_.functions[callee->second].flags_in) {
+                line("ts_flags_out(s, fl);");
+            }
+            if (callee != program_.starts.end()) {
                 referenced_.insert(target);
                 call("f_" + name(target) + "(s);");
             } else {
                 call("tsugiki_dispatch(s);");
+            }
+            if (function_.flags_after.contains(pc_)) {
+                line("fl = ts_flags_in(s);");
             }
             return;
         }
@@ -320,6 +337,9 @@ private:
         case Op::ret:
         case Op::retaa:
         case Op::retab:
+            if (function_.flags_out) {
+                line("ts_flags_out(s, fl);");
+            }
             line("s->pc = " + get(in.op == Op::ret ? in.rn() : 30, true) + ";");
             line("return;");
             return;
@@ -923,6 +943,145 @@ private:
 
 }  // namespace
 
+namespace {
+
+bool is_call(Op op) {
+    return op == Op::blr || op == Op::blraa || op == Op::blrab || op == Op::blraaz || op == Op::blrabz;
+}
+
+bool is_return(Op op) {
+    return op == Op::ret || op == Op::retaa || op == Op::retab;
+}
+
+bool is_stop(Op op) {
+    return op == Op::brk || op == Op::hlt || op == Op::udf || op == Op::invalid;
+}
+
+// nzcv liveness, one bit, over every function's own cfg; calls and returns pass flags along
+// only where both sides agree to (llvm's machine outliner), the rest is aapcs64
+void flag_flow(Program& program) {
+    std::vector<std::vector<std::pair<bool, bool>>> uses(program.functions.size());
+    for (size_t f = 0; f < program.functions.size(); ++f) {
+        const Function& fn = program.functions[f];
+        std::ostringstream scratch;
+        std::set<uint64_t> unused;
+        Emitter e(program, fn, scratch, "", unused);
+        uses[f].resize(fn.code.size());
+        for (size_t i = 0; i < fn.code.size(); ++i) {
+            Op op = fn.code[i].op;
+            if (op == Op::bl || op == Op::b || op == Op::br || is_call(op) || is_return(op)) {
+                continue;
+            }
+            uses[f][i] = e.flag_use(i);
+        }
+    }
+    auto callee_of = [&](uint64_t target) -> Function* {
+        auto it = program.starts.find(target);
+        return it == program.starts.end() ? nullptr : &program.functions[it->second];
+    };
+    bool changed = true;
+    for (int round = 0; changed && round < 16; ++round) {
+        changed = false;
+        for (size_t f = 0; f < program.functions.size(); ++f) {
+            Function& fn = program.functions[f];
+            size_t n = fn.code.size();
+            auto index = [&](uint64_t a) { return size_t((a - fn.start) / 4); };
+            auto inside = [&](uint64_t a) { return a >= fn.start && a < fn.end; };
+            // live before each instruction
+            std::vector<char> live(n, 0);
+            // a jump out of here is a tail call, the callee gets our flags
+            auto leaving = [&](uint64_t target) {
+                Function* g = callee_of(target);
+                return g && g->flags_in;
+            };
+            auto after = [&](size_t i) -> bool {
+                const Instruction& in = fn.code[i];
+                uint64_t pc = fn.start + 4 * i;
+                bool falls = i + 1 < n && live[i + 1];
+                switch (in.op) {
+                case Op::b: {
+                    uint64_t t = *branch_target(in, pc);
+                    return inside(t) ? bool(live[index(t)]) : leaving(t);
+                }
+                case Op::b_cond:
+                case Op::bc_cond:
+                case Op::cbz:
+                case Op::cbnz:
+                case Op::tbz:
+                case Op::tbnz: {
+                    uint64_t t = *branch_target(in, pc);
+                    return falls || (inside(t) ? bool(live[index(t)]) : leaving(t));
+                }
+                case Op::br: {
+                    auto table = fn.tables.find(pc);
+                    if (table == fn.tables.end()) {
+                        return false;
+                    }
+                    for (uint64_t t : table->second) {
+                        if (live[index(t)]) return true;
+                    }
+                    return false;
+                }
+                default:
+                    if (is_return(in.op)) return fn.flags_out;
+                    if (is_stop(in.op)) return false;
+                    return falls;
+                }
+            };
+            for (bool again = true; again;) {
+                again = false;
+                for (size_t i = n; i-- > 0;) {
+                    const Instruction& in = fn.code[i];
+                    bool value;
+                    if (in.op == Op::bl) {
+                        Function* g = callee_of(*branch_target(in, fn.start + 4 * i));
+                        value = g && g->flags_in;
+                    } else if (is_call(in.op)) {
+                        value = false;
+                    } else if (in.op == Op::b || in.op == Op::br || is_return(in.op)) {
+                        value = after(i);
+                    } else {
+                        auto [reads, writes] = uses[f][i];
+                        value = reads || (after(i) && !writes);
+                    }
+                    if (char(value) != live[i]) {
+                        live[i] = char(value);
+                        again = true;
+                    }
+                }
+            }
+            if (n && live[0] && !fn.flags_in) {
+                fn.flags_in = true;
+                changed = true;
+            }
+            for (size_t i = 0; i < n; ++i) {
+                const Instruction& in = fn.code[i];
+                uint64_t pc = fn.start + 4 * i;
+                if (in.op == Op::bl && i + 1 < n && live[i + 1] && !fn.flags_after.contains(pc)) {
+                    fn.flags_after.insert(pc);
+                    if (Function* g = callee_of(*branch_target(in, pc)); g && !g->flags_out) {
+                        g->flags_out = true;
+                    }
+                    changed = true;
+                }
+                // a tail call from something that hands flags back has to hand them back too
+                if (fn.flags_out && (in.op == Op::b || in.op == Op::b_cond || in.op == Op::bc_cond || in.op == Op::cbz ||
+                                     in.op == Op::cbnz || in.op == Op::tbz || in.op == Op::tbnz)) {
+                    uint64_t t = *branch_target(in, pc);
+                    if (!inside(t)) {
+                        if (Function* g = callee_of(t); g && !g->flags_out) {
+                            g->flags_out = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+}  // namespace
+
 Program discover(const elf::Library& library) {
     std::vector<std::pair<uint64_t, uint64_t>> ranges;
     auto fdes = eh_frame::read(library);
@@ -1138,6 +1297,7 @@ Program discover(const elf::Library& library) {
             }
         }
     }
+    flag_flow(program);
     return program;
 }
 
