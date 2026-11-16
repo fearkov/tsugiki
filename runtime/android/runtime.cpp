@@ -8,6 +8,7 @@
 #include <sys/ucontext.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
+#include <sys/system_properties.h>
 
 #include <algorithm>
 #include <atomic>
@@ -404,6 +405,41 @@ extern "C" void tsugiki_host_call(void* function, tsugiki::rt::HostCall* call);
 
 namespace tsugiki::rt {
 
+namespace {
+
+// setprop debug.tsugiki.trace gl,egl logs those imports, * logs all of them
+const std::vector<std::string>& trace_prefixes() {
+    static const std::vector<std::string> prefixes = [] {
+        std::vector<std::string> out;
+        char value[PROP_VALUE_MAX] = {};
+        __system_property_get("debug.tsugiki.trace", value);
+        std::string all = value;
+        for (size_t at = 0; at < all.size();) {
+            size_t comma = std::min(all.find(',', at), all.size());
+            if (comma > at) {
+                out.push_back(all.substr(at, comma - at));
+            }
+            at = comma + 1;
+        }
+        return out;
+    }();
+    return prefixes;
+}
+
+bool traced(const char* name) {
+    if (trace_prefixes().empty() || !name) {
+        return false;
+    }
+    for (const std::string& p : trace_prefixes()) {
+        if (p == "*" || std::strncmp(name, p.c_str(), p.size()) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
 // six ints in registers, the guest's x6 x7 and stack words on the host stack, doubles in xmm0..7;
 // rax:rdx and xmm0:xmm1 come back, for 16-byte structs too
 void generic_call(tsugiki_state* s, const Stub& stub) {
@@ -422,7 +458,18 @@ void generic_call(tsugiki_state* s, const Stub& stub) {
     }
     c.stack = extra;
     c.count = 16;
+    bool trace = traced(stub.name);
+    if (trace) {
+        __android_log_print(ANDROID_LOG_INFO, "tsugiki", "%s(%llx, %llx, %llx, %llx, %llx, %llx | %llx %llx %llx %llx)", stub.name,
+                            (unsigned long long)c.ints[0], (unsigned long long)c.ints[1], (unsigned long long)c.ints[2],
+                            (unsigned long long)c.ints[3], (unsigned long long)c.ints[4], (unsigned long long)c.ints[5],
+                            (unsigned long long)c.fps[0], (unsigned long long)c.fps[1], (unsigned long long)c.fps[2],
+                            (unsigned long long)c.fps[3]);
+    }
     tsugiki_host_call(stub.host, &c);
+    if (trace) {
+        __android_log_print(ANDROID_LOG_INFO, "tsugiki", "%s -> %llx", stub.name, (unsigned long long)c.rax);
+    }
     s->x[0] = c.rax;
     s->x[1] = c.rdx;
     s->v[0].lo = c.xmm0[0];
