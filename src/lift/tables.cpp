@@ -294,6 +294,10 @@ std::vector<uint64_t> jump_table(const elf::Library& library, const Function& f,
                     entry = uint64_t(text::sign_extend(entry, int(bytes * 8)));
                 }
                 uint64_t target = anchor + (extend(entry, option) << amount);
+                if (target == f.end) {
+                    // an unreachable default lands right past the function, more cases can follow
+                    continue;
+                }
                 if (target < f.start || target >= f.end || (target & 3)) {
                     // with a bound every entry has to land in here, else it's the wrong table
                     fits = !count;
