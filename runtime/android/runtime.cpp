@@ -4,6 +4,7 @@
 #include <android/log.h>
 #include <dlfcn.h>
 #include <link.h>
+#include <pthread.h>
 #include <signal.h>
 #include <sys/ucontext.h>
 #include <sys/auxv.h>
@@ -297,8 +298,28 @@ constexpr size_t guest_stack_size = 2 << 20;
 struct Thread {
     alignas(16) tsugiki_state state{};
     uint8_t* stack = nullptr;
+    size_t stack_size = 0;
     int depth = 0;
 };
+
+// every guest stack by host thread, for pthread_getattr_np
+std::mutex stacks_lock;
+std::unordered_map<pthread_t, std::pair<uint8_t*, size_t>>& stacks() {
+    static auto* all = new std::unordered_map<pthread_t, std::pair<uint8_t*, size_t>>;
+    return *all;
+}
+
+// as big as the host thread's own, qt's main thread wants a lot
+size_t stack_size_for_this_thread() {
+    size_t size = 0;
+    pthread_attr_t attr;
+    if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+        void* base = nullptr;
+        pthread_attr_getstack(&attr, &base, &size);
+        pthread_attr_destroy(&attr);
+    }
+    return (std::clamp(size, guest_stack_size, size_t(64) << 20) + 4095) & ~size_t(4095);
+}
 
 uint64_t thread_pointer() {
     uint64_t tp;
@@ -311,15 +332,21 @@ thread_local Thread* current = nullptr;
 Thread& thread() {
     if (current == nullptr) {
         auto* t = new Thread;
-        void* stack = mmap(nullptr, guest_stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+        size_t size = stack_size_for_this_thread();
+        void* stack = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
         if (stack == MAP_FAILED) {
             fail("no memory for a guest stack");
         }
         // a guard page at the bottom
         mprotect(stack, 4096, PROT_NONE);
         t->stack = static_cast<uint8_t*>(stack);
+        t->stack_size = size;
+        {
+            std::lock_guard guard(stacks_lock);
+            stacks()[pthread_self()] = {t->stack + 4096, size - 4096};
+        }
         // some room above, host calls read 16 stack words whether they're there or not
-        t->state.x[31] = reinterpret_cast<uint64_t>(t->stack + guest_stack_size - 512);
+        t->state.x[31] = reinterpret_cast<uint64_t>(t->stack + size - 512);
         // bionic keeps the stack guard in tls slot 5 on both, so share the host's
         t->state.tpidr = thread_pointer();
         // nothing cached yet, ~0 is never a pc
@@ -334,6 +361,17 @@ Thread& thread() {
 
 tsugiki_state* guest_state() {
     return &thread().state;
+}
+
+bool guest_stack_of(pthread_t thread, void** base, size_t* size) {
+    std::lock_guard guard(stacks_lock);
+    auto it = stacks().find(thread);
+    if (it == stacks().end()) {
+        return false;
+    }
+    *base = it->second.first;
+    *size = it->second.second;
+    return true;
 }
 
 uint64_t int_arg(const tsugiki_state* s, int n) {
@@ -634,6 +672,21 @@ void on_segv(int signal, siginfo_t* info, void* context) {
 void watch_segv() {
     static std::once_flag once;
     std::call_once(once, [] {
+        // jits write arm64 code at run time, nothing ahead of time can run that; ask them not to
+        setenv("QV4_FORCE_INTERPRETER", "1", 0);
+        setenv("QT_ENABLE_REGEXP_JIT", "0", 0);
+        // setprop debug.tsugiki.env 'A=1;B=2' puts those in the app's environment, for debugging
+        char extra[PROP_VALUE_MAX] = {};
+        __system_property_get("debug.tsugiki.env", extra);
+        std::string all = extra;
+        for (size_t at = 0; at < all.size();) {
+            size_t end = std::min(all.find(';', at), all.size());
+            std::string one = all.substr(at, end - at);
+            if (size_t eq = one.find('='); eq != std::string::npos && eq > 0) {
+                setenv(one.substr(0, eq).c_str(), one.substr(eq + 1).c_str(), 1);
+            }
+            at = end + 1;
+        }
         struct sigaction action {};
         action.sa_sigaction = on_segv;
         action.sa_flags = SA_SIGINFO | SA_ONSTACK;

@@ -1,6 +1,7 @@
 // libc imports the generic call can't do: va_lists, callbacks, setjmp, dl*, auxv, syscall
 #include <android/log.h>
 #include <dlfcn.h>
+#include <elf.h>
 #include <fcntl.h>
 #include <fenv.h>
 #include <link.h>
@@ -9,6 +10,7 @@
 #include <signal.h>
 #include <sys/auxv.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -518,14 +520,104 @@ void syscall_thunk(tsugiki_state* s, const Stub&) {
     ret(s, s->x[30], uint64_t(r));
 }
 
+// no executable memory for the guest: whatever a jit writes there is arm64 we can't run,
+// and pcre2 and friends go back to interpreting when they can't get any.
+// file mappings just lose exec, arm64's PROT_BTI and PROT_MTE mean nothing here
+constexpr uint64_t guest_prot_extra = 0x30;
+
+void mmap_thunk(tsugiki_state* s, const Stub&) {
+    uint64_t prot = s->x[2] & ~guest_prot_extra;
+    int fd = int(s->x[4]);
+    if ((prot & PROT_EXEC) && (s->x[3] & MAP_ANONYMOUS)) {
+        errno = EACCES;
+        ret(s, s->x[30], uint64_t(MAP_FAILED));
+        return;
+    }
+    void* r = mmap(ptr<void>(s->x[0]), size_t(s->x[1]), int(prot & ~uint64_t(PROT_EXEC)), int(s->x[3]), fd, off_t(s->x[5]));
+    ret(s, s->x[30], reinterpret_cast<uint64_t>(r));
+}
+
+void mprotect_thunk(tsugiki_state* s, const Stub&) {
+    uint64_t prot = s->x[2] & ~guest_prot_extra;
+    if (prot & PROT_EXEC) {
+        errno = EACCES;
+        ret(s, s->x[30], uint64_t(-1));
+        return;
+    }
+    ret(s, s->x[30], uint64_t(int64_t(mprotect(ptr<void>(s->x[0]), size_t(s->x[1]), int(prot)))));
+}
+
+// the guest reading one of our .so files gets the arm64 original we carry inside it,
+// qt checks plugins' elf headers and metadata that way; -1 if it isn't one of ours
+int open_original(const char* path, uint64_t flags) {
+    size_t n = std::strlen(path);
+    if (n < 4 || std::strcmp(path + n - 3, ".so") != 0 || (flags & O_ACCMODE) != O_RDONLY) {
+        return -1;
+    }
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    auto read_at = [&](void* to, size_t size, uint64_t at) { return pread(fd, to, size, off_t(at)) == ssize_t(size); };
+    int result = -1;
+    Elf64_Ehdr eh;
+    if (read_at(&eh, sizeof eh, 0) && std::memcmp(eh.e_ident, ELFMAG, SELFMAG) == 0 && eh.e_machine == EM_X86_64 &&
+        eh.e_shentsize == sizeof(Elf64_Shdr) && eh.e_shstrndx < eh.e_shnum) {
+        std::vector<Elf64_Shdr> sections(eh.e_shnum);
+        if (read_at(sections.data(), sections.size() * sizeof(Elf64_Shdr), eh.e_shoff)) {
+            const Elf64_Shdr& names = sections[eh.e_shstrndx];
+            std::vector<char> text(names.sh_size + 1, 0);
+            if (read_at(text.data(), names.sh_size, names.sh_offset)) {
+                for (const Elf64_Shdr& sh : sections) {
+                    if (sh.sh_name < names.sh_size && std::strcmp(text.data() + sh.sh_name, ".tsugiki_image") == 0) {
+                        std::vector<uint8_t> image(sh.sh_size);
+                        int memfd = read_at(image.data(), image.size(), sh.sh_offset)
+                                        ? int(syscall(SYS_memfd_create, path + n - std::min<size_t>(n, 40), (flags & O_CLOEXEC) ? 1u : 0u))
+                                        : -1;
+                        if (memfd >= 0 && write(memfd, image.data(), image.size()) == ssize_t(image.size()) && lseek(memfd, 0, SEEK_SET) == 0) {
+                            result = memfd;
+                        } else if (memfd >= 0) {
+                            close(memfd);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    close(fd);
+    return result;
+}
+
+// a thread running guest code has its stack where the guest's sp is, not on the host stack;
+// qml's v4, rust and gcs measure recursion against these bounds
+void pthread_getattr_np_thunk(tsugiki_state* s, const Stub&) {
+    auto thread = pthread_t(s->x[0]);
+    auto* attr = ptr<pthread_attr_t>(s->x[1]);
+    int r = pthread_getattr_np(thread, attr);
+    void* base = nullptr;
+    size_t size = 0;
+    if (r == 0 && guest_stack_of(thread, &base, &size)) {
+        pthread_attr_setstack(attr, base, size);
+    }
+    ret(s, s->x[30], uint64_t(int64_t(r)));
+}
+
 // open and friends, with arm64's flags
 void open_thunk(tsugiki_state* s, const Stub&) {
-    int r = open(ptr<char>(s->x[0]), int(host_open_flags(s->x[1])), mode_t(s->x[2]));
+    int r = open_original(ptr<char>(s->x[0]), s->x[1]);
+    if (r < 0) {
+        r = open(ptr<char>(s->x[0]), int(host_open_flags(s->x[1])), mode_t(s->x[2]));
+    }
     ret(s, s->x[30], uint64_t(int64_t(r)));
 }
 
 void openat_thunk(tsugiki_state* s, const Stub&) {
-    int r = openat(int(s->x[0]), ptr<char>(s->x[1]), int(host_open_flags(s->x[2])), mode_t(s->x[3]));
+    const char* path = ptr<char>(s->x[1]);
+    int r = path[0] == '/' || int(s->x[0]) == AT_FDCWD ? open_original(path, s->x[2]) : -1;
+    if (r < 0) {
+        r = openat(int(s->x[0]), path, int(host_open_flags(s->x[2])), mode_t(s->x[3]));
+    }
     ret(s, s->x[30], uint64_t(int64_t(r)));
 }
 
@@ -1064,6 +1156,10 @@ const Special specials[] = {
     {"fcntl", fcntl_thunk},
     {"fcntl64", fcntl_thunk},
     {"pipe2", pipe2_thunk},
+    {"pthread_getattr_np", pthread_getattr_np_thunk},
+    {"mmap", mmap_thunk},
+    {"mmap64", mmap_thunk},
+    {"mprotect", mprotect_thunk},
     {"fegetenv", fegetenv_thunk},
     {"fesetenv", fesetenv_thunk},
     {"feholdexcept", feholdexcept_thunk},
@@ -1117,6 +1213,14 @@ long guest_syscall(uint64_t arm, uint64_t a, uint64_t b, uint64_t c, uint64_t d,
         break;
     case 59:  // pipe2
         b = host_open_flags(b);
+        break;
+    case 222:  // mmap and mprotect, no exec for jits, see mmap_thunk
+    case 226:
+        c &= ~uint64_t(0x30);
+        if ((c & PROT_EXEC) && (arm == 226 || (d & MAP_ANONYMOUS))) {
+            return -EACCES;
+        }
+        c &= ~uint64_t(PROT_EXEC);
         break;
     case 79:  // newfstatat and fstat, x86's struct stat is bigger
     case 80: {

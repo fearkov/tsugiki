@@ -17,6 +17,7 @@ add_library(tsugiki_core STATIC
     src/android.cpp
     src/a64/simd.cpp
     src/apk.cpp
+    src/resources.cpp
     src/eh_frame.cpp
     src/elf.cpp
     src/lift/lift.cpp

@@ -16,6 +16,7 @@
 
 #include "apk.hpp"
 #include "bytes.hpp"
+#include "resources.hpp"
 
 namespace fs = std::filesystem;
 
@@ -112,7 +113,8 @@ std::string module_cpp(const std::string& id, const std::string& soname, bool ex
 
 std::string glue_asm(const elf::Library& library, const std::string& id, const std::string& image_path, bool executable) {
     std::string out;
-    out += "    .section .rodata.tsugiki_image, \"a\"\n    .balign 16\n";
+    // its own section, the runtime finds it by name when the guest opens the .so itself
+    out += "    .section .tsugiki_image, \"a\"\n    .balign 16\n";
     out += "    .globl tsugiki_image_" + id + "\n    .hidden tsugiki_image_" + id + "\ntsugiki_image_" + id + ":\n";
     out += "    .incbin \"" + image_path + "\"\n";
     out += "    .globl tsugiki_image_" + id + "_end\n    .hidden tsugiki_image_" + id + "_end\ntsugiki_image_" + id + "_end:\n\n";
@@ -427,8 +429,20 @@ void build_apk(const std::string& in, const std::string& out, bool force, int jo
     fs::path work = fs::path(out).replace_extension(".work");
     fs::create_directories(work / "arm64");
     std::vector<std::string> paths;
+    // qt lists its libs per abi in resources.arsc and loads the main one as lib<name>_<abi>.so
+    std::optional<std::vector<uint8_t>> qt_arsc;
+    std::string qt_main;
     {
         apk::Apk apk(in);
+        auto names = apk.names();
+        if (std::find(names.begin(), names.end(), "resources.arsc") != names.end()) {
+            qt_arsc = resources::retarget_qt_libs(apk.read("resources.arsc"));
+        }
+        if (qt_arsc) {
+            if (auto name = resources::manifest_meta(apk.read("AndroidManifest.xml"), "android.app.lib_name")) {
+                qt_main = "lib" + *name + "_arm64-v8a.so";
+            }
+        }
         auto abis = apk.abis();
         if (std::find(abis.begin(), abis.end(), "arm64-v8a") == abis.end()) {
             throw Error(in + ": no arm64-v8a libs, nothing to translate");
@@ -465,13 +479,26 @@ void build_apk(const std::string& in, const std::string& out, bool force, int jo
         if (name && (std::string(name).starts_with("lib/") || signature_file(name))) {
             check_zip(zip_delete(z, zip_uint64_t(i)), std::string("can't drop ") + name);
         }
+        if (name && qt_arsc && std::string(name) == "resources.arsc") {
+            zip_source_t* source = zip_source_buffer(z, qt_arsc->data(), qt_arsc->size(), 0);
+            if (!source || zip_file_replace(z, zip_uint64_t(i), source, 0) < 0) {
+                zip_source_free(source);
+                throw Error("can't put back resources.arsc");
+            }
+            check_zip(zip_set_file_compression(z, zip_uint64_t(i), ZIP_CM_STORE, 0), "can't store resources.arsc");
+        }
     }
     for (const auto& entry : fs::directory_iterator(libs)) {
         if (!entry.is_regular_file() || entry.path().extension() != ".so") {
             continue;
         }
         zip_source_t* source = zip_source_file(z, entry.path().c_str(), 0, ZIP_LENGTH_TO_END);
-        std::string name = "lib/x86_64/" + entry.path().filename().string();
+        std::string file = entry.path().filename().string();
+        if (file == qt_main) {
+            // qt's java side asks for the main lib with the device's abi in the name
+            file = file.substr(0, file.size() - std::string("_arm64-v8a.so").size()) + "_x86_64.so";
+        }
+        std::string name = "lib/x86_64/" + file;
         zip_int64_t index = source ? zip_file_add(z, name.c_str(), source, ZIP_FL_ENC_UTF_8) : -1;
         if (index < 0) {
             zip_source_free(source);

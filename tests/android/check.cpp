@@ -232,6 +232,7 @@ void bridge() {
     std::snprintf(native_quad, sizeof native_quad, "%.30Lf %.30Lf", sqrtl(2.0L), third + third + third);
     std::printf("bridge_long_double: %s (native %s)\n", quad, native_quad);
     CHECK(close_to_one == 1 && std::strcmp(quad, native_quad) == 0);
+    CHECK(get<int (*)()>(lib, "bridge_stack_bounds")() == 1);
     lldiv_t d = get<lldiv_t (*)(long long, long long)>(lib, "bridge_lldiv")(-1000000000007LL, 13);
     CHECK(d.quot == -1000000000007LL / 13 && d.rem == -1000000000007LL % 13);
 }

@@ -307,3 +307,16 @@ int bridge_long_double(char* out, int size) {
     snprintf(out, size, "%.30Lf %.30Lf", sqrtl(2.0L), sum);
     return sum > 0.99999999999999999999L && sum < 1.00000000000000000001L;
 }
+
+// a local of ours has to be inside the stack pthread says this thread has, qml's v4 checks that
+int bridge_stack_bounds(void) {
+    volatile int local = 0;
+    pthread_attr_t attr;
+    if (pthread_getattr_np(pthread_self(), &attr) != 0) return -1;
+    void* base = NULL;
+    size_t size = 0;
+    pthread_attr_getstack(&attr, &base, &size);
+    pthread_attr_destroy(&attr);
+    uintptr_t at = (uintptr_t)&local;
+    return at >= (uintptr_t)base && at < (uintptr_t)base + size && size >= (1 << 20);
+}

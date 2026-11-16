@@ -11,6 +11,7 @@
 
 #include "android.hpp"
 #include "apk.hpp"
+#include "resources.hpp"
 #include "bytes.hpp"
 #include "eh_frame.hpp"
 #include "elf.hpp"
@@ -172,6 +173,14 @@ int info(const std::vector<std::string>& paths) {
                 std::cout << " " << abi;
             }
             std::cout << (abis.empty() ? " none, no native code" : "") << "\n";
+            auto names = apk.names();
+            if (std::find(names.begin(), names.end(), "resources.arsc") != names.end()) {
+                if (auto arsc = resources::retarget_qt_libs(apk.read("resources.arsc"))) {
+                    auto main = resources::manifest_meta(apk.read("AndroidManifest.xml"), "android.app.lib_name");
+                    std::cout << "  qt: libs listed per abi, main lib " << (main ? *main : "unknown") << ", resources.arsc "
+                              << apk.read("resources.arsc").size() << " -> " << arsc->size() << " bytes\n";
+                }
+            }
             for (const std::string& name : apk.libraries("arm64-v8a")) {
                 describe(elf::Library(apk.read(name), name));
             }

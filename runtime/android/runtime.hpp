@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <cstdint>
+#include <pthread.h>
 #include <string>
 
 #include "tsugiki.h"
@@ -27,6 +28,8 @@ uint64_t make_stub(const Stub& stub);
 void generic_call(tsugiki_state* s, const Stub& stub);
 // logs the last imports this thread went through generic_call with
 void dump_recent_calls();
+// a thread's guest stack, usable part, false if it never ran guest code
+bool guest_stack_of(pthread_t thread, void** base, size_t* size);
 // logs pc, lr and the x29 frame chain as lib+offset
 void log_guest_backtrace(const tsugiki_state* s);
 
