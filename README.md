@@ -97,7 +97,9 @@ Translating needs the Android NDK (`ANDROID_NDK_HOME` or the newest one in
 `~/Android/Sdk/ndk`), and making APKs needs the SDK's build-tools and openssl.
 `tests/android/run.sh` checks translated code against native builds on a device
 or emulator, and `tests/android/sweep.py` translates arm64-only F-Droid apps in
-bulk and checks that they start.
+bulk and checks that they start. `tests/difftest/run.sh build lib.so` runs every
+instruction a library has both translated and interpreted, from random states,
+and prints the ones that disagree.
 
 ## Note
 
