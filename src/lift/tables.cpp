@@ -19,12 +19,20 @@ constexpr size_t window = 256;
 
 enum class Write { no, yes, unknown };
 
-Write writes(const Instruction& in, int reg) {
+bool keeps(const elf::Library& library, uint64_t function, int reg);
+
+// pc is where in sits, for following a bl into llvm's outlined functions
+Write writes(const elf::Library& library, const Instruction& in, uint64_t pc, int reg, bool follow = true) {
     if (reg == 31) {
         return Write::no;
     }
     switch (in.op) {
     case Op::bl:
+        // the machine outliner calls lil straight-line functions that only touch a couple registers
+        if (follow && keeps(library, pc + uint64_t(text::sign_extend(in.bits(25, 0), 26) * 4), reg)) {
+            return Write::no;
+        }
+        return reg <= 18 || reg == 30 ? Write::unknown : Write::no;
     case Op::blr:
     case Op::blraa:
     case Op::blrab:
@@ -68,11 +76,47 @@ Write writes(const Instruction& in, int reg) {
     return Write::no;
 }
 
+// a callee that runs straight to its ret w/o touching reg, outlined code mostly
+bool keeps(const elf::Library& library, uint64_t function, int reg) {
+    for (uint64_t pc = function; pc < function + 4 * 32; pc += 4) {
+        auto word = library.at(pc, 4);
+        if (!word || !library.code(pc)) {
+            return false;
+        }
+        uint32_t raw;
+        std::memcpy(&raw, word->data(), 4);
+        Instruction in = a64::decode(raw);
+        if (in.op == Op::ret) {
+            return true;
+        }
+        switch (in.op) {
+        case Op::b:
+        case Op::bl:
+        case Op::br:
+        case Op::blr:
+        case Op::b_cond:
+        case Op::bc_cond:
+        case Op::cbz:
+        case Op::cbnz:
+        case Op::tbz:
+        case Op::tbnz:
+        case Op::invalid:
+            return false;
+        default:
+            break;
+        }
+        if (writes(library, in, pc, reg, false) != Write::no) {
+            return false;
+        }
+    }
+    return false;
+}
+
 // the nearest earlier instruction writing reg, by address order, no cfg
-std::optional<size_t> writer(const Function& f, size_t before, int reg) {
+std::optional<size_t> writer(const elf::Library& library, const Function& f, size_t before, int reg) {
     size_t stop = before > window ? before - window : 0;
     for (size_t j = before; j-- > stop;) {
-        switch (writes(f.code[j], reg)) {
+        switch (writes(library, f.code[j], f.start + 4 * j, reg)) {
         case Write::no: continue;
         case Write::yes: return j;
         case Write::unknown: return std::nullopt;
@@ -81,7 +125,7 @@ std::optional<size_t> writer(const Function& f, size_t before, int reg) {
     return std::nullopt;
 }
 
-std::optional<uint64_t> value(const Function& f, size_t before, int reg, int depth = 0);
+std::optional<uint64_t> value(const elf::Library& library, const Function& f, size_t before, int reg, int depth = 0);
 
 // [base, #offset] of an integer ldr/str with an immediate, for stack slots
 struct Slot {
@@ -120,7 +164,7 @@ std::optional<int> stored_to(const Instruction& in, Slot want) {
 }
 
 // what the instruction at j leaves in its rd
-std::optional<uint64_t> produced(const Function& f, size_t j, int depth) {
+std::optional<uint64_t> produced(const elf::Library& library, const Function& f, size_t j, int depth) {
     if (depth > 8) {
         return std::nullopt;
     }
@@ -136,7 +180,7 @@ std::optional<uint64_t> produced(const Function& f, size_t j, int depth) {
         if (in.rn() == 31) {
             return std::nullopt;
         }
-        auto base = value(f, j, in.rn(), depth + 1);
+        auto base = value(library, f, j, in.rn(), depth + 1);
         if (!base) {
             return std::nullopt;
         }
@@ -147,7 +191,7 @@ std::optional<uint64_t> produced(const Function& f, size_t j, int depth) {
     case Op::logical_shifted:
         // mov is orr rd, zr, rm
         if (in.bits(30, 29) == 1 && in.rn() == 31 && in.bits(15, 10) == 0 && !in.bit(21)) {
-            auto v = value(f, j, in.rm(), depth + 1);
+            auto v = value(library, f, j, in.rm(), depth + 1);
             if (v && !in.sf()) {
                 return uint32_t(*v);
             }
@@ -165,7 +209,7 @@ std::optional<uint64_t> produced(const Function& f, size_t j, int depth) {
         }
         for (size_t k = j; k-- > 0;) {
             if (auto stored = stored_to(f.code[k], *from)) {
-                return value(f, k, *stored, depth + 1);
+                return value(library, f, k, *stored, depth + 1);
             }
         }
         return std::nullopt;
@@ -175,24 +219,24 @@ std::optional<uint64_t> produced(const Function& f, size_t j, int depth) {
     }
 }
 
-std::optional<uint64_t> value(const Function& f, size_t before, int reg, int depth) {
-    auto j = writer(f, before, reg);
+std::optional<uint64_t> value(const elf::Library& library, const Function& f, size_t before, int reg, int depth) {
+    auto j = writer(library, f, before, reg);
     if (!j) {
         return std::nullopt;
     }
-    return produced(f, *j, depth);
+    return produced(library, f, *j, depth);
 }
 
 // the nearest write if we can work it out, else every write in the function we can,
 // hoisted table bases hide behind writes on other paths
-std::vector<uint64_t> candidates(const Function& f, size_t before, int reg) {
-    if (auto v = value(f, before, reg)) {
+std::vector<uint64_t> candidates(const elf::Library& library, const Function& f, size_t before, int reg) {
+    if (auto v = value(library, f, before, reg)) {
         return {*v};
     }
     std::set<uint64_t> all;
     for (size_t j = 0; j < f.code.size(); ++j) {
-        if (writes(f.code[j], reg) == Write::yes) {
-            if (auto v = produced(f, j, 0)) {
+        if (writes(library, f.code[j], f.start + 4 * j, reg) == Write::yes) {
+            if (auto v = produced(library, f, j, 0)) {
                 all.insert(*v);
             }
         }
@@ -216,7 +260,7 @@ uint64_t extend(uint64_t v, unsigned option) {
 
 std::vector<uint64_t> jump_table(const elf::Library& library, const Function& f, size_t index) {
     const Instruction& br = f.code[index];
-    auto add_at = writer(f, index, br.rn());
+    auto add_at = writer(library, f, index, br.rn());
     if (!add_at) {
         return {};
     }
@@ -233,7 +277,7 @@ std::vector<uint64_t> jump_table(const elf::Library& library, const Function& f,
     } else {
         return {};
     }
-    auto load_at = writer(f, *add_at, entry_reg);
+    auto load_at = writer(library, f, *add_at, entry_reg);
     auto is_table_load = [&](std::optional<size_t> at) {
         if (!at) return false;
         const Instruction& in = f.code[*at];
@@ -242,14 +286,14 @@ std::vector<uint64_t> jump_table(const elf::Library& library, const Function& f,
     if (!is_table_load(load_at) && amount == 0 && add.op == Op::addsub_shifted) {
         // table-relative offsets put the table first
         std::swap(anchor_reg, entry_reg);
-        load_at = writer(f, *add_at, entry_reg);
+        load_at = writer(library, f, *add_at, entry_reg);
     }
     if (!is_table_load(load_at)) {
         return {};
     }
-    auto anchors = candidates(f, *add_at, anchor_reg);
+    auto anchors = candidates(library, f, *add_at, anchor_reg);
     const Instruction& load = f.code[*load_at];
-    auto tables = candidates(f, *load_at, load.rn());
+    auto tables = candidates(library, f, *load_at, load.rn());
     if (anchors.empty() || tables.empty()) {
         return {};
     }
@@ -258,7 +302,7 @@ std::vector<uint64_t> jump_table(const elf::Library& library, const Function& f,
     // the index and whatever it was moved from, a cmp on anything else bounds something else
     std::set<int> index_regs{load.rm()};
     for (int reg = load.rm(), hops = 0; hops < 4; ++hops) {
-        auto w = writer(f, *load_at, reg);
+        auto w = writer(library, f, *load_at, reg);
         if (!w || f.code[*w].op != Op::logical_shifted || f.code[*w].bits(30, 29) != 1 || f.code[*w].rn() != 31) {
             break;
         }

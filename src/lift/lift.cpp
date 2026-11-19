@@ -1135,6 +1135,94 @@ static std::vector<uint32_t> simd_words(const elf::Library& library) {
     return words;
 }
 
+// dart's aot snapshots (flutter's libapp.so): code w/o fdes, function symbols or relocations,
+// but the snapshot data has an instructions table, (pc offset, stack map offset) pairs, one per function
+struct DartCode {
+    std::vector<std::pair<uint64_t, uint64_t>> blobs;
+    std::vector<std::pair<uint64_t, uint64_t>> functions;
+    // the checked and normal entries past a monomorphic prefix
+    std::vector<uint64_t> entries;
+};
+
+static DartCode dart_code(const elf::Library& library) {
+    DartCode out;
+    auto symbol = [&](const std::string& name) -> const elf::Symbol* {
+        for (const elf::Symbol& s : library.dynamic_symbols) {
+            if (s.name == name && s.defined() && s.size > 0) {
+                return &s;
+            }
+        }
+        return nullptr;
+    };
+    for (const char* kind : {"Vm", "Isolate"}) {
+        const elf::Symbol* text = symbol(std::string("_kDart") + kind + "SnapshotInstructions");
+        const elf::Symbol* data = symbol(std::string("_kDart") + kind + "SnapshotData");
+        auto bytes = data ? library.at(data->value, data->size) : std::nullopt;
+        if (!text || !bytes) {
+            continue;
+        }
+        auto u32 = [&](size_t at) {
+            uint32_t v;
+            std::memcpy(&v, bytes->data() + at, 4);
+            return v;
+        };
+        // the longest run of growing offsets that land inside the code
+        size_t best = 0, best_at = 0;
+        for (size_t i = 0; i + 16 <= bytes->size();) {
+            size_t j = i, n = 0;
+            int64_t previous = -1;
+            while (j + 8 <= bytes->size() && int64_t(u32(j)) > previous && u32(j) < text->size) {
+                previous = u32(j);
+                ++n;
+                j += 8;
+            }
+            if (n > best) {
+                best = n;
+                best_at = i;
+            }
+            i = n > 1 ? j : i + 4;
+        }
+        std::vector<uint64_t> starts;
+        for (size_t k = 0; k < best; ++k) {
+            // offset 0 is the image header, not code
+            if (uint32_t offset = u32(best_at + 8 * k); offset != 0 && (offset & 3) == 0) {
+                starts.push_back(text->value + offset);
+            }
+        }
+        size_t valid = 0;
+        for (uint64_t start : starts) {
+            auto word = library.at(start, 4);
+            valid += word && a64::decode(word->data()[0] | word->data()[1] << 8 | word->data()[2] << 16 | uint32_t(word->data()[3]) << 24).valid();
+        }
+        // a table of real code or nothing
+        if (starts.size() < 4 || valid * 10 < starts.size() * 9) {
+            continue;
+        }
+        uint64_t blob_end = (text->value + text->size) & ~uint64_t(3);
+        out.blobs.emplace_back(text->value, blob_end);
+        for (size_t k = 0; k < starts.size(); ++k) {
+            uint64_t end = k + 1 < starts.size() ? starts[k + 1] : blob_end;
+            out.functions.emplace_back(starts[k], end);
+            // ldr xN, [thr, #miss]; br xN jumps to the switchable call miss stub,
+            // calls come in past it, +8 checks the receiver's class and +20 is the normal entry
+            auto head = library.at(starts[k], 8);
+            if (!head || end - starts[k] < 24) {
+                continue;
+            }
+            uint32_t w0, w1;
+            std::memcpy(&w0, head->data(), 4);
+            std::memcpy(&w1, head->data() + 4, 4);
+            Instruction ldr = a64::decode(w0), br = a64::decode(w1);
+            if (ldr.op == Op::single_unsigned && ldr.access.load && ldr.access.bytes == 8 && !ldr.access.simd && br.op == Op::br && br.rn() == ldr.rt()) {
+                for (uint64_t at = starts[k] + 8; at <= starts[k] + 24 && at < end; at += 4) {
+                    out.entries.push_back(at);
+                }
+            }
+        }
+    }
+    return out;
+}
+
 Program discover(const elf::Library& library) {
     std::vector<std::pair<uint64_t, uint64_t>> ranges;
     auto fdes = eh_frame::read(library);
@@ -1142,6 +1230,14 @@ Program discover(const elf::Library& library) {
         if (f.size > 0 && library.executable(f.start)) {
             ranges.emplace_back(f.start, f.start + f.size);
         }
+    }
+    DartCode dart = dart_code(library);
+    if (!dart.blobs.empty()) {
+        // one fde over a whole snapshot says nothing, the table knows the functions
+        std::erase_if(ranges, [&](const std::pair<uint64_t, uint64_t>& r) {
+            return std::any_of(dart.blobs.begin(), dart.blobs.end(), [&](const auto& b) { return r.first < b.second && b.first < r.second; });
+        });
+        ranges.insert(ranges.end(), dart.functions.begin(), dart.functions.end());
     }
     // exported code without an fde, hand-written asm mostly
     auto covered = [&](uint64_t address) {
@@ -1222,6 +1318,7 @@ Program discover(const elf::Library& library) {
             pointers.insert(target);
         }
     }
+    pointers.insert(dart.entries.begin(), dart.entries.end());
     for (auto [start, end] : known) {
         scan(start, end);
     }
@@ -1312,6 +1409,20 @@ Program discover(const elf::Library& library) {
                     f.tables[pc] = std::move(targets);
                 }
             }
+        }
+        // code right after a jump that nothing jumps to only runs if something comes in thru a pointer:
+        // asm interpreters' handlers (luajit), dart's catch blocks, cases of tables we missed
+        for (size_t i = 1; i < f.code.size(); ++i) {
+            uint64_t pc = start + 4 * i;
+            const Instruction& in = f.code[i];
+            Op before = f.code[i - 1].op;
+            bool after_jump = before == Op::b || before == Op::br || before == Op::ret || before == Op::retaa || before == Op::retab ||
+                              before == Op::braa || before == Op::brab || before == Op::braaz || before == Op::brabz || is_stop(before);
+            if (!after_jump || f.labels.contains(pc) || !in.valid() || in.op == Op::brk || in.op == Op::udf ||
+                in.op == Op::hlt || in.raw == 0xd503201f) {
+                continue;
+            }
+            f.entries.insert(pc);
         }
         program.starts[start] = program.functions.size();
         program.functions.push_back(std::move(f));
