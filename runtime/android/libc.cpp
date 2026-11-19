@@ -663,8 +663,13 @@ void dlsym_thunk(tsugiki_state* s, const Stub&) {
     if (uint64_t guest = host ? guest_of_wrapper(host) : 0) {
         result = guest;
     } else if (uint64_t guest = host ? 0 : lookup_guest(name)) {
+        // found after all, but the host's miss left an error and dart checks dlerror even w/ a result
+        dlerror();
         result = guest;
     } else if (uint64_t special = special_import(name)) {
+        if (!host) {
+            dlerror();
+        }
         result = special;
     } else if (host) {
         result = reinterpret_cast<uint64_t>(host);
