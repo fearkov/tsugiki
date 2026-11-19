@@ -452,10 +452,66 @@ void check_zip(int error, const std::string& what) {
 
 }  // namespace
 
+namespace {
+
+// python-for-android's libpybundle.so is a tar.gz of the app with its extension modules in it,
+// arm64 .so files python dlopens later: same archive back, every elf in it translated
+void python_bundle(const fs::path& work, const std::string& bundle, const fs::path& libs, int jobs) {
+    fs::path in = work / "pybundle.tar.gz", tree = work / "pybundle", out = libs / "libpybundle.so", done = work / "pybundle.done";
+    if (fs::exists(done) && fs::exists(in) && read_text(in) == bundle && fs::exists(out)) {
+        return;
+    }
+    fs::remove(done);
+    write_text(in, bundle);
+    // p4a's tars have folders w/o the x bit, fine on android, not for us
+    if (fs::exists(tree)) {
+        run("chmod -R u+rwX " + quote(tree.string()));
+        fs::remove_all(tree);
+    }
+    fs::create_directories(tree);
+    run("tar xzf " + quote(in.string()) + " -C " + quote(tree.string()));
+    run("chmod -R u+rwX " + quote(tree.string()));
+    // by folder, files in different ones can share a name
+    std::map<fs::path, std::vector<std::string>> folders;
+    for (const auto& entry : fs::recursive_directory_iterator(tree)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".so") {
+            continue;
+        }
+        // arm64 only, some bundles carry a stray x86_64 module too (e_machine at 18)
+        std::string head = read_text(entry.path()).substr(0, 20);
+        if (head.size() == 20 && head.starts_with("\x7f" "ELF") && uint8_t(head[18]) == 183 && head[19] == 0) {
+            folders[entry.path().parent_path()].push_back(entry.path().string());
+        }
+    }
+    size_t count = 0;
+    for (const auto& [folder, paths] : folders) {
+        fs::path built = work / "pybundle-x86_64" / fs::relative(folder, tree);
+        fs::create_directories(built);
+        fs::copy_file(libs / "libtsugiki.so", built / "libtsugiki.so", fs::copy_options::overwrite_existing);
+        build_libraries(paths, built.string(), jobs);
+        for (const std::string& path : paths) {
+            elf::Library library = read_library(path);
+            fs::copy_file(built / soname_of(library, path), path, fs::copy_options::overwrite_existing);
+            ++count;
+        }
+    }
+    std::string top;
+    for (const auto& entry : fs::directory_iterator(tree)) {
+        top += " " + quote(entry.path().filename().string());
+    }
+    run("tar czf " + quote(out.string()) + " -C " + quote(tree.string()) + top);
+    write_text(done, "");
+    std::printf("libpybundle.so: %zu modules\n", count);
+}
+
+}  // namespace
+
 void build_apk(const std::string& in, const std::string& out, bool force, int jobs) {
     fs::path work = fs::path(out).replace_extension(".work");
     fs::create_directories(work / "arm64");
     std::vector<std::string> paths;
+    // files in lib/ that aren't code, python-for-android ships the app as libpybundle.so so android unpacks it
+    std::vector<std::pair<std::string, std::string>> as_is;
     // qt lists its libs per abi in resources.arsc and loads the main one as lib<name>_<abi>.so
     std::optional<std::vector<uint8_t>> qt_arsc;
     std::string qt_main;
@@ -481,6 +537,10 @@ void build_apk(const std::string& in, const std::string& out, bool force, int jo
             fs::path path = work / "arm64" / fs::path(name).filename();
             auto bytes = apk.read(name);
             std::string text(bytes.begin(), bytes.end());
+            if (!text.starts_with("\x7f" "ELF")) {
+                as_is.emplace_back(path.filename().string(), std::move(text));
+                continue;
+            }
             // untouched if it's the same, so its translation isn't redone
             if (!fs::exists(path) || read_text(path) != text) {
                 write_text(path, text);
@@ -491,6 +551,13 @@ void build_apk(const std::string& in, const std::string& out, bool force, int jo
     fs::path libs = work / "x86_64";
     build_runtime(libs.string());
     build_libraries(paths, libs.string(), jobs);
+    for (const auto& [file, text] : as_is) {
+        if (text.starts_with("\x1f\x8b") && file == "libpybundle.so") {
+            python_bundle(work, text, libs, jobs);
+        } else if (!fs::exists(libs / file) || read_text(libs / file) != text) {
+            write_text(libs / file, text);
+        }
+    }
 
     // the same apk, every lib dir swapped for ours, stored so they load in place
     fs::path unsigned_apk = work / "unsigned.apk", aligned = work / "aligned.apk";
