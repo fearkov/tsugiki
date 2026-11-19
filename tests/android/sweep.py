@@ -168,6 +168,26 @@ def check(pkg, wait, dir):
     return alive, colors(png), interpreted, note.strip()[:200]
 
 
+def device_up():
+    try:
+        return "\tdevice" in adb("devices", timeout=20).stdout
+    except subprocess.TimeoutExpired:
+        return False
+
+
+# the emulator dies now and then (some vulkan apps take it down), start it again
+def revive(command):
+    print("   no device, starting the emulator again", flush=True)
+    subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(10)
+    adb("wait-for-device", timeout=300)
+    for _ in range(120):
+        if adb("shell", "getprop", "sys.boot_completed").stdout.strip() == "1":
+            return True
+        time.sleep(2)
+    return False
+
+
 def run(args):
     dir = ROOT / "apks" / "sweep"
     dir.mkdir(parents=True, exist_ok=True)
@@ -178,6 +198,9 @@ def run(args):
         if pkg in done:
             continue
         k = rest[0] if rest else "?"
+        if args.restart and not device_up() and not revive(args.restart):
+            print("   the emulator won't come back, stopping", flush=True)
+            return
         print(f"== {pkg} ({k}, {int(size) / 1e6:.1f} MB)", flush=True)
         out = dir / f"{pkg}.apk"
         secs, status, n, interpreted, note = "0", "error", "0", "", ""
@@ -221,6 +244,7 @@ def main():
     r.add_argument("--keep", action="store_true")
     r.add_argument("--jobs", type=int, default=4)
     r.add_argument("--tsugiki", type=Path)
+    r.add_argument("--restart", help="shell command that starts the emulator when adb loses it")
     args = p.parse_args()
     if getattr(args, "tsugiki", None):
         global TSUGIKI
