@@ -374,6 +374,9 @@ private:
             line("s->pc = " + get(in.rn(), true) + ";");
             line("s->x[30] = tb + " + hex(next_) + ";");
             call("tsugiki_dispatch(s);");
+            if (function_.flags_after.contains(pc_)) {
+                line("fl = ts_flags_in(s);");
+            }
             return;
         case Op::svc:
             line("tsugiki_svc(s, " + std::to_string(in.bits(20, 5)) + ");");
@@ -998,6 +1001,28 @@ void flag_flow(Program& program) {
             uses[f][i] = e.flag_use(i);
         }
     }
+    // flags computed right before a ret and never used in here are a result: dart's identical stubs
+    // end in cmp; ret and their callers come thru blr, so nothing else would tell us
+    for (size_t f = 0; f < program.functions.size(); ++f) {
+        Function& fn = program.functions[f];
+        for (size_t i = 1; i < fn.code.size() && !fn.flags_out; ++i) {
+            if (!is_return(fn.code[i].op)) {
+                continue;
+            }
+            for (size_t j = i; j-- > 0;) {
+                const Instruction& in = fn.code[j];
+                uint64_t pc = fn.start + 4 * j;
+                if (branch_target(in, pc) || in.op == Op::br || is_call(in.op) || is_return(in.op) || fn.labels.contains(pc + 4) ||
+                    uses[f][j].first) {
+                    break;
+                }
+                if (uses[f][j].second) {
+                    fn.flags_out = true;
+                    break;
+                }
+            }
+        }
+    }
     auto callee_of = [&](uint64_t target) -> Function* {
         // calls through our own plt stubs land on the function itself
         if (auto plt = program.plt.find(target); plt != program.plt.end()) {
@@ -1089,6 +1114,11 @@ void flag_flow(Program& program) {
                     if (Function* g = callee_of(*branch_target(in, pc)); g && !g->flags_out) {
                         g->flags_out = true;
                     }
+                    changed = true;
+                }
+                // thru a register we can't tell the callee, but flags read after it came from it
+                if (in.op != Op::bl && is_call(in.op) && i + 1 < n && live[i + 1] && !fn.flags_after.contains(pc)) {
+                    fn.flags_after.insert(pc);
                     changed = true;
                 }
                 // a tail call from something that hands flags back has to hand them back too
