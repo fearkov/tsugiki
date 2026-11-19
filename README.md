@@ -51,6 +51,8 @@ Early, but real apps run. What works so far:
   hand condition flags back to their caller
 - Qt 6 apps: their per-ABI library lists get pointed at x86_64, and code that
   reads its own `.so` files sees the arm64 originals
+- python-for-android (Kivy) apps: the extension modules packed inside their
+  `libpybundle.so` get translated too
 - JITs that can fall back, like QML's and PCRE2's, are refused executable memory
   and interpret instead; ones that can't, like LuaJIT's, get their code run by
   the interpreter
