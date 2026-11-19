@@ -247,7 +247,7 @@ std::optional<Prepared> prepare(const std::string& path, const std::string& dir,
     fs::copy_file(path, image, fs::copy_options::overwrite_existing);
 
     auto program = lift::discover(library);
-    // for hunting lifter bugs: TSUGIKI_LIFT_ONLY=libfoo.so:lo-hi translates only the functions starting in there,
+    // for hunting lifter bugs, `TSUGIKI_LIFT_ONLY=libfoo.so:lo-hi` translates only the functions starting in there,
     // the rest goes to the interpreter
     if (const char* only = std::getenv("TSUGIKI_LIFT_ONLY"); only && std::string(only).starts_with(soname + ":")) {
         std::string range = std::string(only).substr(soname.size() + 1);
@@ -454,8 +454,8 @@ void check_zip(int error, const std::string& what) {
 
 namespace {
 
-// python-for-android's libpybundle.so is a tar.gz of the app with its extension modules in it,
-// arm64 .so files python dlopens later: same archive back, every elf in it translated
+// `python-for-android`'s libpybundle.so is a tar.gz of the app with its extension modules in it,
+// arm64 .so files python dlopens later, same archive back w/ every elf in it translated
 void python_bundle(const fs::path& work, const std::string& bundle, const fs::path& libs, int jobs) {
     fs::path in = work / "pybundle.tar.gz", tree = work / "pybundle", out = libs / "libpybundle.so", done = work / "pybundle.done";
     if (fs::exists(done) && fs::exists(in) && read_text(in) == bundle && fs::exists(out)) {
@@ -510,7 +510,7 @@ void build_apk(const std::string& in, const std::string& out, bool force, int jo
     fs::path work = fs::path(out).replace_extension(".work");
     fs::create_directories(work / "arm64");
     std::vector<std::string> paths;
-    // files in lib/ that aren't code, python-for-android ships the app as libpybundle.so so android unpacks it
+    // files in lib/ that aren't code, `python-for-android` ships the app as libpybundle.so so android unpacks it
     std::vector<std::pair<std::string, std::string>> as_is;
     // qt lists its libs per abi in resources.arsc and loads the main one as lib<name>_<abi>.so
     std::optional<std::vector<uint8_t>> qt_arsc;

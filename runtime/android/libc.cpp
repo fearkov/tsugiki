@@ -520,8 +520,8 @@ void syscall_thunk(tsugiki_state* s, const Stub&) {
     ret(s, s->x[30], uint64_t(r));
 }
 
-// guest jits: rwx anon memory gets EACCES so pcre2 and friends go back to their interpreters,
-// the ones flipping rw pages to rx (luajit, which can't live w/o it) get their code interpreted.
+// guest jits, rwx anon memory gets EACCES so pcre2 and friends go back to their interpreters
+// and the ones flipping rw pages to rx (luajit can't live w/o it) get their code interpreted
 // mappings never really get exec, arm64's PROT_BTI and PROT_MTE mean nothing here
 constexpr uint64_t guest_prot_extra = 0x30;
 

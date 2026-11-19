@@ -1,5 +1,5 @@
 // every unique word in some libs' code, as the lifter's c++ for each, for test.cpp to run
-// usage: gen <out dir> <lib.so>...
+// run as gen <out dir> <lib.so>...
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -17,7 +17,7 @@
 using namespace tsugiki;
 using a64::Op;
 
-// what the harness can run in a sandbox: no control flow, no system stuff
+// what the harness can run in a sandbox, no control flow or system stuff
 static bool testable(const a64::Instruction& in) {
     switch (in.op) {
     case Op::invalid:
@@ -59,7 +59,7 @@ static bool testable(const a64::Instruction& in) {
     default:
         break;
     }
-    // vector ops: the interpreter runs the lifter's own code for them, nothing to compare
+    // vector ops run the lifter's own code in the interpreter too, nothing to compare
     if (a64::is_simd(in.op)) {
         return in.op == Op::fp_1src || in.op == Op::fp_2src || in.op == Op::fp_3src || in.op == Op::fp_compare || in.op == Op::fp_ccmp ||
                in.op == Op::fp_csel || in.op == Op::fp_imm || in.op == Op::fp_int || in.op == Op::fp_fixed;

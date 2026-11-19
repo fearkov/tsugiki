@@ -28,7 +28,7 @@ Write writes(const elf::Library& library, const Instruction& in, uint64_t pc, in
     }
     switch (in.op) {
     case Op::bl:
-        // the machine outliner calls lil straight-line functions that only touch a couple registers
+        // the machine outliner calls lil straight line functions that only touch a couple registers
         if (follow && keeps(library, pc + uint64_t(text::sign_extend(in.bits(25, 0), 26) * 4), reg)) {
             return Write::no;
         }

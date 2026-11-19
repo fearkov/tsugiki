@@ -1,5 +1,5 @@
 // runs every word both ways, the lifter's c++ and the interpreter, from the same random states,
-// and prints the ones that end up different. usage: test [rounds per word]
+// and prints the ones that end up different, run as test [rounds per word]
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -61,7 +61,7 @@ void random_state(tsugiki_state& s, std::mt19937_64& r, const a64::Instruction& 
         if (in.op == Op::single_register) {
             s.x[in.rm()] = r() % 512;
         }
-        // exclusives: half the time a monitor that matches
+        // exclusives get a monitor that matches half the time
         s.excl = 0;
         if (r() & 1) {
             s.excl = 1;

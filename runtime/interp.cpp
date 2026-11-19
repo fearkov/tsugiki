@@ -106,7 +106,7 @@ uint64_t shifted(uint64_t value, unsigned type, unsigned amount, bool wide) {
     }
 }
 
-// uxtb .. sxtx of a 64-bit value
+// uxtb thru sxtx of a 64 bit value
 uint64_t extended(uint64_t v, unsigned option) {
     switch (option) {
     case 0: return uint8_t(v);
@@ -172,7 +172,7 @@ bool cas(uint64_t a, T expected, T desired) {
     return __atomic_compare_exchange_n(reinterpret_cast<T*>(a), &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 }
 
-// compare and swap of 1..16 bytes, the old value back in expected
+// compare and swap of 1 to 16 bytes, the old value back in expected
 template <typename T>
 T swap_in(uint64_t a, T expected, T desired) {
     __atomic_compare_exchange_n(reinterpret_cast<T*>(a), &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);

@@ -1001,8 +1001,8 @@ void flag_flow(Program& program) {
             uses[f][i] = e.flag_use(i);
         }
     }
-    // flags computed right before a ret and never used in here are a result: dart's identical stubs
-    // end in cmp; ret and their callers come thru blr, so nothing else would tell us
+    // flags computed right before a ret and never used in here are a result, dart's identical stubs
+    // end in `cmp; ret` and their callers come thru blr so nothing else would tell us
     for (size_t f = 0; f < program.functions.size(); ++f) {
         Function& fn = program.functions[f];
         for (size_t i = 1; i < fn.code.size() && !fn.flags_out; ++i) {
@@ -1165,7 +1165,7 @@ static std::vector<uint32_t> simd_words(const elf::Library& library) {
     return words;
 }
 
-// dart's aot snapshots (flutter's libapp.so): code w/o fdes, function symbols or relocations,
+// dart's aot snapshots (flutter's libapp.so) have code w/o fdes, function symbols or relocations,
 // but the snapshot data has an instructions table, (pc offset, stack map offset) pairs, one per function
 struct DartCode {
     std::vector<std::pair<uint64_t, uint64_t>> blobs;
@@ -1233,7 +1233,7 @@ static DartCode dart_code(const elf::Library& library) {
         for (size_t k = 0; k < starts.size(); ++k) {
             uint64_t end = k + 1 < starts.size() ? starts[k + 1] : blob_end;
             out.functions.emplace_back(starts[k], end);
-            // ldr xN, [thr, #miss]; br xN jumps to the switchable call miss stub,
+            // `ldr xN, [thr, #miss]; br xN` jumps to the switchable call miss stub,
             // calls come in past it, +8 checks the receiver's class and +20 is the normal entry
             auto head = library.at(starts[k], 8);
             if (!head || end - starts[k] < 24) {
@@ -1424,8 +1424,8 @@ Program discover(const elf::Library& library) {
         }
     };
     drain();
-    // code still nobody owns: static functions only called from code we never saw or thru pointers
-    // we can't follow, libs w/o unwind info have lots. every gap gets split into functions, padding skipped
+    // code still nobody owns, static functions only called from code we never saw or thru pointers
+    // we can't follow (libs w/o unwind info have lots), every gap gets split into functions w/o the padding
     for (auto [low, high] : library.code_ranges()) {
         uint64_t at = (low + 3) & ~uint64_t(3);
         while (at + 4 <= high) {
@@ -1486,8 +1486,8 @@ Program discover(const elf::Library& library) {
                 }
             }
         }
-        // code right after a jump that nothing jumps to only runs if something comes in thru a pointer:
-        // asm interpreters' handlers (luajit), dart's catch blocks, cases of tables we missed.
+        // code right after a jump that nothing jumps to only runs if something comes in thru a pointer,
+        // like asm interpreters' handlers (luajit), dart's catch blocks and cases of tables we missed
         // functions dispatching thru lots of brs that aren't tables are interpreters, their handlers
         // are branch targets too, so there every spot after a jump counts
         size_t computed = 0;
@@ -1570,7 +1570,7 @@ Program discover(const elf::Library& library) {
     return program;
 }
 
-// the fp/simd words, a function each, sorted for the interpreter's lookup;
+// the fp/simd words, a function each, sorted for the interpreter's lookup,
 // big libs get several files, the table goes in the last one
 static std::vector<std::string> ops_parts(const Program& program, const std::string& id, size_t per_part = 8000) {
     const std::vector<uint32_t>& ops = program.ops;
