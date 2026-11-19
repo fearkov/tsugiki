@@ -98,8 +98,10 @@ extern "C" uint64_t tsugiki_enter(Frame* f) {
         call.fps[i][0] = f->fps[i][0];
         call.fps[i][1] = f->fps[i][1];
     }
+    // we can't know how many there are, so plenty: flutter's nativeSetViewportMetrics has 13 there,
+    // reading past the real ones only reads the caller's frame
     call.stack = f->stack + 2;
-    call.stack_count = 8;
+    call.stack_count = 32;
     if (kind == jni_env) {
         call.ints[0] = guest_env(reinterpret_cast<void*>(call.ints[0]));
     } else if (kind == jni_vm) {
