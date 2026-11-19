@@ -1331,20 +1331,14 @@ Program discover(const elf::Library& library) {
             pending.insert(p);
         }
     }
-    while (!pending.empty()) {
-        uint64_t start = *pending.begin();
-        pending.erase(pending.begin());
-        if (inside_known(start)) {
-            continue;
-        }
-        // up to the next function we know of or will look at
-        auto next = known.upper_bound(start);
-        uint64_t limit = next != known.end() ? next->first : library.loaded(start)->vaddr + library.loaded(start)->filesz;
-        if (auto later = pending.upper_bound(start); later != pending.end()) {
-            limit = std::min(limit, *later);
-        }
-        // linear, ends at a jump or return nothing jumps past
+    // linear from start, ends at a jump or return nothing jumps past
+    auto extent = [&](uint64_t start, uint64_t limit) {
+        // a jump table's cases count as jumps forward
+        // (w/o that a big switch w/o an fde ends after its first case, sqlite's vdbe did)
         uint64_t end = start, furthest = start;
+        Function probe;
+        probe.start = start;
+        probe.end = limit;
         while (end < limit) {
             auto word = library.at(end, 4);
             if (!word) {
@@ -1358,6 +1352,7 @@ Program discover(const elf::Library& library) {
             if (!in.valid()) {
                 break;
             }
+            probe.code.push_back(in);
             if (auto target = branch_target(in, pc); target && in.op != Op::bl && *target > pc && *target < limit) {
                 furthest = std::max(furthest, *target);
             }
@@ -1365,20 +1360,71 @@ Program discover(const elf::Library& library) {
                          in.op == Op::brab || in.op == Op::braaz || in.op == Op::brabz;
             if (in.op == Op::br) {
                 // a jump table keeps going, its cases follow
-                auto before = library.at(pc - 4, 4);
-                uint32_t prev = 0;
-                if (before) {
-                    std::memcpy(&prev, before->data(), 4);
+                auto targets = jump_table(library, probe, probe.code.size() - 1);
+                for (uint64_t target : targets) {
+                    if (target > pc) {
+                        furthest = std::max(furthest, target);
+                    }
                 }
-                Op op = a64::decode(prev).op;
-                jumps = op != Op::addsub_shifted && op != Op::addsub_extended;
+                Op op = probe.code.size() > 1 ? probe.code[probe.code.size() - 2].op : Op::invalid;
+                jumps = targets.empty() && op != Op::addsub_shifted && op != Op::addsub_extended;
             }
             if (jumps && furthest < end) {
                 break;
             }
         }
-        known[start] = end;
-        scan(start, end);
+        return end;
+    };
+    auto drain = [&] {
+        while (!pending.empty()) {
+            uint64_t start = *pending.begin();
+            pending.erase(pending.begin());
+            if (inside_known(start)) {
+                continue;
+            }
+            // up to the next function we know of or will look at
+            auto next = known.upper_bound(start);
+            uint64_t limit = next != known.end() ? next->first : library.loaded(start)->vaddr + library.loaded(start)->filesz;
+            if (auto later = pending.upper_bound(start); later != pending.end()) {
+                limit = std::min(limit, *later);
+            }
+            uint64_t end = extent(start, limit);
+            known[start] = end;
+            scan(start, end);
+        }
+    };
+    drain();
+    // code still nobody owns: static functions only called from code we never saw or thru pointers
+    // we can't follow, libs w/o unwind info have lots. every gap gets split into functions, padding skipped
+    for (auto [low, high] : library.code_ranges()) {
+        uint64_t at = (low + 3) & ~uint64_t(3);
+        while (at + 4 <= high) {
+            auto next = known.upper_bound(at);
+            if (next != known.begin() && at < std::prev(next)->second) {
+                at = std::prev(next)->second;
+                continue;
+            }
+            auto word = library.at(at, 4);
+            if (!word) {
+                break;
+            }
+            uint32_t raw;
+            std::memcpy(&raw, word->data(), 4);
+            // nops and zeros between functions
+            if (raw == 0xd503201f || raw == 0 || !a64::decode(raw).valid()) {
+                at += 4;
+                continue;
+            }
+            uint64_t end = extent(at, next != known.end() ? std::min(high, next->first) : high);
+            if (end <= at) {
+                at += 4;
+                continue;
+            }
+            known[at] = end;
+            scan(at, end);
+            drain();
+            at = end;
+        }
     }
 
     Program program;
