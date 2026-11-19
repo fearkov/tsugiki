@@ -116,6 +116,9 @@ void describe(const elf::Library& library) {
               << " exported ones without an fde\n";
     // how much of it we can translate yet
     auto program = lift::discover(library);
+    if (program.dart_functions) {
+        std::cout << "  dart aot snapshot: " << program.dart_functions << " functions from its instructions table\n";
+    }
     size_t total = 0, simd = 0, invalid = 0;
     for (const auto& f : program.functions) {
         for (const auto& in : f.code) {

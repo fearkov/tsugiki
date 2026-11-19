@@ -38,6 +38,8 @@ struct Program {
     std::map<uint64_t, uint64_t> plt;
     // every fp/simd word in the code, sorted, each gets its own lil function for the interpreter
     std::vector<uint32_t> ops;
+    // functions a dart aot snapshot's instructions table gave us, 0 if it isn't one
+    size_t dart_functions = 0;
 };
 
 Program discover(const elf::Library& library);

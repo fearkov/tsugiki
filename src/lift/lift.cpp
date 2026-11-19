@@ -1566,6 +1566,7 @@ Program discover(const elf::Library& library) {
     }
     flag_flow(program);
     program.ops = simd_words(library);
+    program.dart_functions = dart.functions.size();
     return program;
 }
 
