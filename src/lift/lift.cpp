@@ -1411,14 +1411,25 @@ Program discover(const elf::Library& library) {
             }
         }
         // code right after a jump that nothing jumps to only runs if something comes in thru a pointer:
-        // asm interpreters' handlers (luajit), dart's catch blocks, cases of tables we missed
+        // asm interpreters' handlers (luajit), dart's catch blocks, cases of tables we missed.
+        // functions dispatching thru lots of brs that aren't tables are interpreters, their handlers
+        // are branch targets too, so there every spot after a jump counts
+        size_t computed = 0;
+        for (size_t i = 0; i < f.code.size(); ++i) {
+            computed += f.code[i].op == Op::br && !f.tables.contains(start + 4 * i);
+        }
+        bool interpreter = computed >= 4;
         for (size_t i = 1; i < f.code.size(); ++i) {
             uint64_t pc = start + 4 * i;
             const Instruction& in = f.code[i];
             Op before = f.code[i - 1].op;
             bool after_jump = before == Op::b || before == Op::br || before == Op::ret || before == Op::retaa || before == Op::retab ||
                               before == Op::braa || before == Op::brab || before == Op::braaz || before == Op::brabz || is_stop(before);
-            if (!after_jump || f.labels.contains(pc) || !in.valid() || in.op == Op::brk || in.op == Op::udf ||
+            // a handler can also start where the one before falls into it (luajit's forl into iforl)
+            if (interpreter && !after_jump) {
+                after_jump = branch_target(f.code[i - 1], pc - 4).has_value() && before != Op::bl;
+            }
+            if (!after_jump || (f.labels.contains(pc) && !interpreter) || !in.valid() || in.op == Op::brk || in.op == Op::udf ||
                 in.op == Op::hlt || in.raw == 0xd503201f) {
                 continue;
             }
