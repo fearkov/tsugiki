@@ -25,6 +25,8 @@ struct Module {
 
 // tests flip this to run everything thru the interpreter
 bool interpret_all = false;
+// and this to hide the libs' fp/simd words, like jit code
+bool hide_ops = false;
 
 std::vector<Module>& modules() {
     static std::vector<Module> all;
@@ -67,8 +69,9 @@ void tsugiki_add_module(uint64_t base, uint64_t size, const tsugiki_entry* entri
     modules().push_back({base, size, entries, count, ops, op_count});
 }
 
-void tsugiki_interpret_all(bool on) {
+void tsugiki_interpret_all(bool on, bool without_ops) {
     interpret_all = on;
+    hide_ops = on && without_ops;
 }
 
 namespace tsugiki::interp {
@@ -77,8 +80,8 @@ Place place(uint64_t pc) {
     Place p;
     if (const Module* m = module_of(pc)) {
         p.guest = true;
-        p.ops = m->ops;
-        p.op_count = m->op_count;
+        p.ops = hide_ops ? nullptr : m->ops;
+        p.op_count = hide_ops ? 0 : m->op_count;
         p.code = find(pc);
     }
     return p;

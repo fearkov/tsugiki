@@ -21,9 +21,9 @@ inline bool& interpreted() {
 }
 
 struct Interpreted {
-    Interpreted() {
+    explicit Interpreted(bool without_ops = false) {
         interpreted() = true;
-        tsugiki_interpret_all(true);
+        tsugiki_interpret_all(true, without_ops);
     }
     ~Interpreted() {
         interpreted() = false;

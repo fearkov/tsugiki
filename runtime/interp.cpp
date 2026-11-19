@@ -271,14 +271,204 @@ private:
         return true;
     }
 
-    // an fp/simd word, run by the lib's own code for it
+    // an fp/simd word, run by the lib's own code for it, scalar fp by hand when there's none (jit code)
     bool lib_op(const Instruction& in) {
         if (op_ == nullptr) {
+            if (scalar_fp(in)) {
+                return true;
+            }
             trap(in, "no code for this fp/simd word");
         }
         ts_flags_out(s_, fl_);
         op_(s_);
         fl_ = ts_flags_in(s_);
+        return true;
+    }
+
+    template <typename F>
+    F fget(int n) const {
+        F f;
+        std::memcpy(&f, &s_->v[n], sizeof(F));
+        return f;
+    }
+
+    // scalar writes zero the rest of the register
+    template <typename F>
+    void fset(int d, F f) {
+        s_->v[d] = {0, 0};
+        std::memcpy(&s_->v[d], &f, sizeof(F));
+    }
+
+    // same as the lifter's fp code, the helpers come from tsugiki_simd.h
+    bool scalar_fp(const Instruction& in) {
+        switch (in.op) {
+        case Op::fp_1src:
+        case Op::fp_2src:
+        case Op::fp_3src:
+        case Op::fp_compare:
+        case Op::fp_ccmp:
+        case Op::fp_csel:
+        case Op::fp_imm:
+            switch (in.bits(23, 22)) {
+            case 0: return fp_ops<float>(in, 2);
+            case 1: return fp_ops<double>(in, 3);
+            case 3: return fp_ops<_Float16>(in, 1);
+            default: return false;
+            }
+        case Op::fp_int:
+        case Op::fp_fixed:
+            switch (in.bits(23, 22)) {
+            case 0: return fp_int<float>(in);
+            case 1: return fp_int<double>(in);
+            case 3: return fp_int<_Float16>(in);
+            default: return false;
+            }
+        default:
+            return false;
+        }
+    }
+
+    template <typename F>
+    bool fp_ops(const Instruction& in, int size) {
+        int d = in.rd(), n = in.rn(), m = in.rm();
+        switch (in.op) {
+        case Op::fp_1src: {
+            F a = fget<F>(n);
+            switch (in.bits(20, 15)) {
+            case 0: fset(d, a); return true;
+            case 1: fset(d, __builtin_elementwise_abs(a)); return true;
+            case 2: fset(d, F(-a)); return true;
+            case 3: fset(d, __builtin_elementwise_sqrt(a)); return true;
+            case 4: fset(d, float(a)); return true;
+            case 5: fset(d, double(a)); return true;
+            case 7: fset(d, _Float16(a)); return true;
+            case 8: case 14: case 15: fset(d, __builtin_elementwise_roundeven(a)); return true;
+            case 9: fset(d, __builtin_elementwise_ceil(a)); return true;
+            case 10: fset(d, __builtin_elementwise_floor(a)); return true;
+            case 11: fset(d, __builtin_elementwise_trunc(a)); return true;
+            case 12: fset(d, __builtin_elementwise_round(a)); return true;
+            default: return false;
+            }
+        }
+        case Op::fp_2src: {
+            F a = fget<F>(n), b = fget<F>(m), v;
+            switch (in.bits(15, 12)) {
+            case 0: v = a * b; break;
+            case 1: v = a / b; break;
+            case 2: v = a + b; break;
+            case 3: v = a - b; break;
+            case 4: v = __builtin_elementwise_maximum(a, b); break;
+            case 5: v = __builtin_elementwise_minimum(a, b); break;
+            case 6: v = ts_maxnum(a, b); break;
+            case 7: v = ts_minnum(a, b); break;
+            case 8: v = -(a * b); break;
+            default: return false;
+            }
+            fset(d, v);
+            return true;
+        }
+        case Op::fp_3src: {
+            F x = fget<F>(n), y = fget<F>(m), a = fget<F>(in.ra());
+            switch (in.bit(21) * 2 + in.bit(15)) {
+            case 0: fset(d, __builtin_elementwise_fma(x, y, a)); break;
+            case 1: fset(d, __builtin_elementwise_fma(F(-x), y, a)); break;
+            case 2: fset(d, __builtin_elementwise_fma(F(-x), y, F(-a))); break;
+            default: fset(d, __builtin_elementwise_fma(x, y, F(-a))); break;
+            }
+            return true;
+        }
+        case Op::fp_compare:
+            ts_fcmp(&fl_, fget<F>(n), in.bit(3) ? F(0) : fget<F>(m));
+            return true;
+        case Op::fp_ccmp:
+            if (holds(fl_, in.bits(15, 12))) {
+                ts_fcmp(&fl_, fget<F>(n), fget<F>(m));
+            } else {
+                ts_nzcv(&fl_, in.bits(3, 0));
+            }
+            return true;
+        case Op::fp_csel:
+            fset(d, holds(fl_, in.bits(15, 12)) ? fget<F>(n) : fget<F>(m));
+            return true;
+        case Op::fp_imm: {
+            // VFPExpandImm
+            uint64_t imm8 = in.bits(20, 13), sign = imm8 >> 7, b = (imm8 >> 6) & 1, cd = (imm8 >> 4) & 3, efgh = imm8 & 15;
+            int e = size == 1 ? 5 : size == 2 ? 8 : 11, f = size == 1 ? 10 : size == 2 ? 23 : 52;
+            uint64_t exp = ((b ^ 1) << (e - 1)) | (b ? ((uint64_t(1) << (e - 3)) - 1) << 2 : 0) | cd;
+            s_->v[d] = {(sign << (e + f)) | (exp << f) | (efgh << (f - 4)), 0};
+            return true;
+        }
+        default:
+            return false;
+        }
+    }
+
+    template <typename I, typename F>
+    I to_int(F f, unsigned rmode, bool away) {
+        if (away) {
+            return ts_to_int<I, ts_away>(f);
+        }
+        switch (rmode) {
+        case 0: return ts_to_int<I, ts_nearest>(f);
+        case 1: return ts_to_int<I, ts_plus>(f);
+        case 2: return ts_to_int<I, ts_minus>(f);
+        default: return ts_to_int<I, ts_zero>(f);
+        }
+    }
+
+    template <typename F>
+    uint64_t to_int(F f, bool sf, bool is_signed, unsigned rmode, bool away) {
+        if (is_signed) {
+            return sf ? uint64_t(to_int<int64_t>(f, rmode, away)) : uint64_t(uint32_t(to_int<int32_t>(f, rmode, away)));
+        }
+        return sf ? to_int<uint64_t>(f, rmode, away) : to_int<uint32_t>(f, rmode, away);
+    }
+
+    // fmov between registers, int conversions, fixed point
+    template <typename F>
+    bool fp_int(const Instruction& in) {
+        unsigned ftype = in.bits(23, 22);
+        bool sf = in.sf();
+        int d = in.rd(), n = in.rn();
+        uint64_t mask = ftype == 3 ? 0xffff : ftype == 0 ? 0xffffffffull : ~uint64_t(0);
+        if (in.op == Op::fp_fixed) {
+            unsigned opcode = in.bits(20, 16);
+            int fbits = 64 - int(in.bits(15, 10));
+            F unscale = F(__builtin_ldexp(1.0, -fbits)), scale = F(__builtin_ldexp(1.0, fbits));
+            if (opcode == 0b00010 || opcode == 0b00011) {
+                uint64_t x = get(n, true);
+                F v = opcode == 0b00010 ? (sf ? F(int64_t(x)) : F(int32_t(x))) : (sf ? F(x) : F(uint32_t(x)));
+                fset(d, F(v * unscale));
+                return true;
+            }
+            set(d, sf, to_int(F(fget<F>(n) * scale), sf, opcode == 0b11000, 3, false));
+            return true;
+        }
+        unsigned rmode = in.bits(20, 19), opcode = in.bits(18, 16);
+        if (opcode == 7) {
+            if (rmode == 1) {
+                s_->v[d].hi = get(n, true);
+            } else {
+                s_->v[d] = {get(n, true) & mask, 0};
+            }
+            return true;
+        }
+        if (opcode == 6) {
+            if (rmode == 1) {
+                set(d, true, s_->v[n].hi);
+            } else if (rmode == 3) {
+                set(d, false, uint32_t(tsugiki_fjcvtzs(s_, fget<double>(n))));
+            } else {
+                set(d, sf, s_->v[n].lo & mask);
+            }
+            return true;
+        }
+        if (opcode == 2 || opcode == 3) {
+            uint64_t x = get(n, true);
+            fset(d, opcode == 2 ? (sf ? F(int64_t(x)) : F(int32_t(x))) : (sf ? F(x) : F(uint32_t(x))));
+            return true;
+        }
+        set(d, sf, to_int(fget<F>(n), sf, !(opcode & 1), rmode, opcode >= 4));
         return true;
     }
 

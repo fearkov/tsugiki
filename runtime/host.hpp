@@ -10,8 +10,8 @@ constexpr uint64_t tsugiki_stop = 0x7ffffffff000ull;
 
 void tsugiki_add_module(uint64_t base, uint64_t size, const tsugiki_entry* entries, uint64_t count, const tsugiki_op* ops = nullptr,
                         uint64_t op_count = 0);
-// everything in guest modules goes thru the interpreter while on
-void tsugiki_interpret_all(bool on);
+// everything in guest modules goes thru the interpreter while on, w/o the libs' fp/simd words if asked
+void tsugiki_interpret_all(bool on, bool without_ops = false);
 void tsugiki_add_host(uint64_t address, tsugiki_code code);
 
 // calls guest code until it returns, x0 back

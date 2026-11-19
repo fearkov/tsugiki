@@ -199,3 +199,9 @@ TEST(interpreted_vectors) {
     translated_scalar_fp();
     translated_vector_loops();
 }
+
+// no lib functions for fp words, the interpreter does scalar fp itself like it does for jit code
+TEST(interpreted_scalar_fp_by_hand) {
+    Interpreted on(true);
+    translated_scalar_fp();
+}
