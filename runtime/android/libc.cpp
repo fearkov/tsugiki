@@ -520,9 +520,9 @@ void syscall_thunk(tsugiki_state* s, const Stub&) {
     ret(s, s->x[30], uint64_t(r));
 }
 
-// no executable memory for the guest: whatever a jit writes there is arm64 we can't run,
-// and pcre2 and friends go back to interpreting when they can't get any.
-// file mappings just lose exec, arm64's PROT_BTI and PROT_MTE mean nothing here
+// guest jits: rwx anon memory gets EACCES so pcre2 and friends go back to their interpreters,
+// the ones flipping rw pages to rx (luajit, which can't live w/o it) get their code interpreted.
+// mappings never really get exec, arm64's PROT_BTI and PROT_MTE mean nothing here
 constexpr uint64_t guest_prot_extra = 0x30;
 
 void mmap_thunk(tsugiki_state* s, const Stub&) {
@@ -534,17 +534,19 @@ void mmap_thunk(tsugiki_state* s, const Stub&) {
         return;
     }
     void* r = mmap(ptr<void>(s->x[0]), size_t(s->x[1]), int(prot & ~uint64_t(PROT_EXEC)), int(s->x[3]), fd, off_t(s->x[5]));
+    if (r != MAP_FAILED && (prot & PROT_EXEC)) {
+        add_guest_code(reinterpret_cast<uint64_t>(r), s->x[1]);
+    }
     ret(s, s->x[30], reinterpret_cast<uint64_t>(r));
 }
 
 void mprotect_thunk(tsugiki_state* s, const Stub&) {
     uint64_t prot = s->x[2] & ~guest_prot_extra;
-    if (prot & PROT_EXEC) {
-        errno = EACCES;
-        ret(s, s->x[30], uint64_t(-1));
-        return;
+    int r = mprotect(ptr<void>(s->x[0]), size_t(s->x[1]), int(prot & ~uint64_t(PROT_EXEC)));
+    if (r == 0 && (prot & PROT_EXEC)) {
+        add_guest_code(s->x[0], s->x[1]);
     }
-    ret(s, s->x[30], uint64_t(int64_t(mprotect(ptr<void>(s->x[0]), size_t(s->x[1]), int(prot)))));
+    ret(s, s->x[30], uint64_t(int64_t(r)));
 }
 
 // the guest reading one of our .so files gets the arm64 original we carry inside it,
@@ -1214,14 +1216,20 @@ long guest_syscall(uint64_t arm, uint64_t a, uint64_t b, uint64_t c, uint64_t d,
     case 59:  // pipe2
         b = host_open_flags(b);
         break;
-    case 222:  // mmap and mprotect, no exec for jits, see mmap_thunk
-    case 226:
+    case 222:  // mmap and mprotect, jits get what mmap_thunk gives them
+    case 226: {
         c &= ~uint64_t(0x30);
-        if ((c & PROT_EXEC) && (arm == 226 || (d & MAP_ANONYMOUS))) {
+        if ((c & PROT_EXEC) && arm == 222 && (d & MAP_ANONYMOUS)) {
             return -EACCES;
         }
+        bool exec = c & PROT_EXEC;
         c &= ~uint64_t(PROT_EXEC);
-        break;
+        long r = raw_syscall(number, a, b, c, d, e, f);
+        if (exec && r >= 0) {
+            add_guest_code(arm == 222 ? uint64_t(r) : a, b);
+        }
+        return r;
+    }
     case 79:  // newfstatat and fstat, x86's struct stat is bigger
     case 80: {
         struct stat h;

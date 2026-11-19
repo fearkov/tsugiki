@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -225,6 +226,35 @@ bool guest_dladdr(uint64_t address, Dl_info* info) {
         return true;
     }
     return false;
+}
+
+namespace {
+
+struct JitCode {
+    std::mutex lock;
+    // start -> end, never shrinks, a jit reuses its pages anyway
+    std::map<uint64_t, uint64_t> ranges;
+};
+
+JitCode& jit_code() {
+    static auto* j = new JitCode;
+    return *j;
+}
+
+}  // namespace
+
+void add_guest_code(uint64_t start, uint64_t size) {
+    JitCode& j = jit_code();
+    std::lock_guard guard(j.lock);
+    uint64_t& end = j.ranges[start];
+    end = std::max(end, start + size);
+}
+
+bool guest_code_at(uint64_t address) {
+    JitCode& j = jit_code();
+    std::lock_guard guard(j.lock);
+    auto it = j.ranges.upper_bound(address);
+    return it != j.ranges.begin() && address < std::prev(it)->second;
 }
 
 // whether a host address is code, by its library's segments
@@ -995,6 +1025,8 @@ Place place(uint64_t pc) {
         }
         return p;
     }
+    // a guest jit's code, slow but it runs
+    p.guest = rt::guest_code_at(pc);
     return p;
 }
 

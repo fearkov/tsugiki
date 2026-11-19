@@ -10,6 +10,7 @@
 #include <math.h>
 #include <signal.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <pthread.h>
 #include <setjmp.h>
@@ -319,4 +320,23 @@ int bridge_stack_bounds(void) {
     pthread_attr_destroy(&attr);
     uintptr_t at = (uintptr_t)&local;
     return at >= (uintptr_t)base && at < (uintptr_t)base + size && size >= (1 << 20);
+}
+
+// a lil jit: rwx in one go is refused like pcre2 sees it, rw then rx works and gets interpreted
+double bridge_jit(int64_t a, int64_t b) {
+    // add x0, x0, x1; scvtf d0, x0; fmov d1, #0.5; fmul d0, d0, d1; ret
+    static const uint32_t code[] = {0x8b010000, 0x9e620000, 0x1e6c1001, 0x1e610800, 0xd65f03c0};
+    void* rwx = mmap(0, 4096, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (rwx != MAP_FAILED) {
+        return -1;
+    }
+    void* page = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    memcpy(page, code, sizeof code);
+    if (mprotect(page, 4096, PROT_READ | PROT_EXEC) != 0) {
+        return -2;
+    }
+    __builtin___clear_cache((char*)page, (char*)page + sizeof code);
+    double r = ((double (*)(int64_t, int64_t))page)(a, b);
+    munmap(page, 4096);
+    return r;
 }

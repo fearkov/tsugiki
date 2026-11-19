@@ -86,6 +86,10 @@ bool guest_dladdr(uint64_t address, Dl_info* info);
 // whether a host address is in some lib's code
 bool host_code(void* address);
 
+// memory a guest jit made executable, the interpreter runs it
+void add_guest_code(uint64_t start, uint64_t size);
+bool guest_code_at(uint64_t address);
+
 // this thread's guest registers, made on first use
 tsugiki_state* guest_state();
 uint64_t int_arg(const tsugiki_state* s, int n);

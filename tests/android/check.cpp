@@ -235,6 +235,9 @@ void bridge() {
     CHECK(get<int (*)()>(lib, "bridge_stack_bounds")() == 1);
     lldiv_t d = get<lldiv_t (*)(long long, long long)>(lib, "bridge_lldiv")(-1000000000007LL, 13);
     CHECK(d.quot == -1000000000007LL / 13 && d.rem == -1000000000007LL % 13);
+    double jit = get<double (*)(int64_t, int64_t)>(lib, "bridge_jit")(40, 3);
+    std::printf("bridge_jit: %g\n", jit);
+    CHECK(jit == 21.5);
 }
 
 void cxx() {
