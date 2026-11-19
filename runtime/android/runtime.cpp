@@ -581,8 +581,32 @@ void generic_call(tsugiki_state* s, const Stub& stub) {
     c.count = 16;
     recent_calls[recent_next++ % 16] = stub.name;
     bool trace = traced(stub.name);
+    // host function pointers that are jni calls get their slot, jni.h's order
+    char named[32];
+    const char* name = stub.name;
+    if (trace && std::strcmp(stub.name, "host") == 0) {
+        bool vm = false;
+        int slot = host_jni_slot(stub.host, &vm);
+        // or x0 is an env or a vm and the function is in its table
+        uint64_t first = c.ints[0] & ~uint64_t(7);
+        if (slot < 0 && first && msync(reinterpret_cast<void*>(first & ~uint64_t(4095)), 4096, MS_ASYNC) == 0) {
+            uint64_t table = *reinterpret_cast<const uint64_t*>(first) & ~uint64_t(7);
+            if (table && msync(reinterpret_cast<void*>(table & ~uint64_t(4095)), 8192, MS_ASYNC) == 0) {
+                for (int i = 0; i < 232 && slot < 0; ++i) {
+                    if (reinterpret_cast<void* const*>(table)[i] == stub.host) {
+                        slot = i;
+                        vm = i < 8;
+                    }
+                }
+            }
+        }
+        if (slot >= 0) {
+            std::snprintf(named, sizeof named, "host %s %d", vm ? "vm?" : "jni", slot);
+            name = named;
+        }
+    }
     if (trace) {
-        __android_log_print(ANDROID_LOG_INFO, "tsugiki", "%s(%llx, %llx, %llx, %llx, %llx, %llx | %llx %llx %llx %llx)", stub.name,
+        __android_log_print(ANDROID_LOG_INFO, "tsugiki", "%s(%llx, %llx, %llx, %llx, %llx, %llx | %llx %llx %llx %llx)", name,
                             (unsigned long long)c.ints[0], (unsigned long long)c.ints[1], (unsigned long long)c.ints[2],
                             (unsigned long long)c.ints[3], (unsigned long long)c.ints[4], (unsigned long long)c.ints[5],
                             (unsigned long long)c.fps[0][0], (unsigned long long)c.fps[1][0], (unsigned long long)c.fps[2][0],
@@ -590,7 +614,7 @@ void generic_call(tsugiki_state* s, const Stub& stub) {
     }
     tsugiki_host_call(stub.host, &c);
     if (trace) {
-        __android_log_print(ANDROID_LOG_INFO, "tsugiki", "%s -> %llx", stub.name, (unsigned long long)c.rax);
+        __android_log_print(ANDROID_LOG_INFO, "tsugiki", "%s -> %llx", name, (unsigned long long)c.rax);
     }
     s->x[0] = c.rax;
     s->x[1] = c.rdx;
@@ -962,8 +986,19 @@ extern "C" void tsugiki_call(tsugiki_state* s) {
         }
         // host code through a plain pointer: vtables of host apis, eglGetProcAddress and such
         if (host_code_cached(s->pc)) {
-            Stub stub{generic_call, reinterpret_cast<void*>(s->pc), 0, "host"};
+            void* function = reinterpret_cast<void*>(s->pc);
+            uint64_t first = s->x[0];
+            Stub stub{generic_call, function, 0, "host"};
             generic_call(s, stub);
+            // art's jni table called straight, android-activity does with the activity's own env
+            thread_local std::unordered_map<void*, int> slots;
+            auto it = slots.find(function);
+            if (it == slots.end()) {
+                it = slots.emplace(function, env_slot(first, function)).first;
+            }
+            if (it->second >= 0) {
+                s->x[0] = jni_result(size_t(it->second), s->x[0]);
+            }
             return;
         }
         log_guest_backtrace(s);

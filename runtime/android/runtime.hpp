@@ -63,6 +63,12 @@ void* host_env_of(uint64_t guest_env);
 uint64_t host_view(uint64_t value);
 // which slot of the guest env or vm table a stub address is, -1 if neither
 int jni_stub_slot(uint64_t address, bool* vm);
+// same for art's own tables, once we've seen an env and a vm, for traces
+int host_jni_slot(const void* function, bool* vm);
+// the slot of env's table holding function, -1 if env isn't one or it isn't there
+int env_slot(uint64_t env, const void* function);
+// a jni call's result the way arm64 callers expect it, narrow ones extended
+uint64_t jni_result(size_t slot, uint64_t value);
 
 // a sigsegv we don't handle, passed to the guest's handler; false if it has none
 bool guest_segv(int sig, siginfo_t* info, void* context);

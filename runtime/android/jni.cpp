@@ -1,8 +1,10 @@
 // jni for guest code: its own JNIEnv and JavaVM, every entry a stub into the real ones
+#include <dlfcn.h>
 #include <jni.h>
 #include <sys/mman.h>
 
 #include <cstddef>
+#include <atomic>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -53,6 +55,7 @@ void call_slot(tsugiki_state* s, size_t slot) {
     s->x[0] = reinterpret_cast<uint64_t>(host);
     Stub stub{generic_call, f, 0, "jni"};
     generic_call(s, stub);
+    s->x[0] = jni_result(slot, s->x[0]);
 }
 
 void plain_slot(tsugiki_state* s, const Stub& stub) {
@@ -306,12 +309,102 @@ uint64_t view_of(void* host, const uint64_t* table) {
 
 }  // namespace
 
+// jni calls returning less than 32 bits: art leaves junk above them in rax,
+// rust on arm64 counts on them coming back extended (ExceptionCheck said yes to everything)
+uint64_t jni_result(size_t slot, uint64_t value) {
+    switch (slot) {
+    case 11: case 24: case 32: case 37: case 38: case 39: case 67: case 68: case 69: case 96: case 117: case 118: case 119:
+    case 146: case 228:
+        return uint8_t(value);
+    case 40: case 41: case 42: case 70: case 71: case 72: case 97: case 120: case 121: case 122: case 147:
+        return uint32_t(int32_t(int8_t(value)));
+    case 43: case 44: case 45: case 73: case 74: case 75: case 98: case 123: case 124: case 125: case 148:
+        return uint16_t(value);
+    case 46: case 47: case 48: case 76: case 77: case 78: case 99: case 126: case 127: case 128: case 149:
+        return uint32_t(int32_t(int16_t(value)));
+    default:
+        return value;
+    }
+}
+
+int env_slot(uint64_t env, const void* function) {
+    // x0 might be anything, read it only if it's mapped
+    uint64_t first = env & ~uint64_t(7);
+    if (!first || msync(reinterpret_cast<void*>(first & ~uint64_t(4095)), 4096, MS_ASYNC) != 0) {
+        return -1;
+    }
+    uint64_t table = *reinterpret_cast<const uint64_t*>(first) & ~uint64_t(7);
+    if (!table || msync(reinterpret_cast<void*>(table & ~uint64_t(4095)), 8192, MS_ASYNC) != 0) {
+        return -1;
+    }
+    // a jni table starts w/ four null reserved slots, a c++ vtable in some object doesn't
+    auto* t = reinterpret_cast<void* const*>(table);
+    if (t[0] || t[1] || t[2] || t[3] || !t[4]) {
+        return -1;
+    }
+    for (int i = 4; i < int(sizeof(JNINativeInterface) / sizeof(void*)); ++i) {
+        if (reinterpret_cast<void* const*>(table)[i] == function) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+namespace {
+
+// art's tables, one each per process, for naming host calls in traces
+std::atomic<void* const*> host_env_functions{nullptr};
+std::atomic<void* const*> host_vm_functions{nullptr};
+
+}  // namespace
+
 uint64_t guest_env(void* host_env) {
+    if (host_env) {
+        host_env_functions.store(*reinterpret_cast<void* const* const*>(host_env), std::memory_order_relaxed);
+    }
     return view_of(host_env, env_table);
 }
 
 uint64_t guest_vm(void* host_vm) {
+    if (host_vm) {
+        host_vm_functions.store(*reinterpret_cast<void* const* const*>(host_vm), std::memory_order_relaxed);
+    }
     return view_of(host_vm, vm_table);
+}
+
+int host_jni_slot(const void* function, bool* vm) {
+    // not seen any yet: ask art for its vm, the env table is the same on every thread
+    if (!host_env_functions.load(std::memory_order_relaxed)) {
+        using Created = jint (*)(JavaVM**, jsize, jsize*);
+        if (auto created = reinterpret_cast<Created>(dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs"))) {
+            JavaVM* jvm = nullptr;
+            jsize n = 0;
+            JNIEnv* env = nullptr;
+            if (created(&jvm, 1, &n) == JNI_OK && n == 1) {
+                host_vm_functions.store(*reinterpret_cast<void* const* const*>(jvm), std::memory_order_relaxed);
+                if (jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK) {
+                    host_env_functions.store(*reinterpret_cast<void* const* const*>(env), std::memory_order_relaxed);
+                }
+            }
+        }
+    }
+    if (void* const* t = host_env_functions.load(std::memory_order_relaxed)) {
+        for (int i = 0; i < int(sizeof(JNINativeInterface) / sizeof(void*)); ++i) {
+            if (t[i] == function) {
+                *vm = false;
+                return i;
+            }
+        }
+    }
+    if (void* const* t = host_vm_functions.load(std::memory_order_relaxed)) {
+        for (int i = 0; i < int(sizeof(JNIInvokeInterface) / sizeof(void*)); ++i) {
+            if (t[i] == function) {
+                *vm = true;
+                return i;
+            }
+        }
+    }
+    return -1;
 }
 
 void* host_env_of(uint64_t guest) {
