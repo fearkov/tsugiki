@@ -123,8 +123,8 @@ Modules& modules() {
     return *m;
 }
 
-// setprop debug.tsugiki.interpret 1, or TSUGIKI_INTERPRET=1, runs every guest lib thru the interpreter,
-// handy to tell a lifter bug from anything else; a list of sonames (libapp.so,libfoo.so) just those
+// `setprop debug.tsugiki.interpret 1` or `TSUGIKI_INTERPRET=1` runs every guest lib thru the interpreter,
+// handy to tell a lifter bug from anything else, a list of sonames (`libapp.so,libfoo.so`) just those
 struct Interpreted {
     bool all = false;
     std::vector<std::string> libs;
@@ -252,7 +252,7 @@ namespace {
 
 struct JitCode {
     std::mutex lock;
-    // start -> end, never shrinks, a jit reuses its pages anyway
+    // start to end, never shrinks, a jit reuses its pages anyway
     std::map<uint64_t, uint64_t> ranges;
 };
 
@@ -316,6 +316,21 @@ void missing_call(tsugiki_state* s, const Stub& stub) {
 }
 
 // an import by name: other translated libs, our special thunks, then the host
+// ndk calls returning bool or uint16_t, the host leaves junk above them in rax and rust on arm64
+// counts on them coming back extended (clang's arm64 code masks them itself)
+int narrow_result(const std::string& name) {
+    static const std::set<std::string> bools = {"ACameraMetadata_isLogicalMultiCamera", "AFont_isItalic", "AIBinder_associateClass", "AIBinder_isAlive", "AIBinder_isHandlingTransaction", "AIBinder_isRemote", "AIBinder_lt", "AIBinder_Weak_lt", "AImageDecoderFrameInfo_hasAlphaWithinBounds", "AImageDecoder_isAnimated", "AMediaCodecActionCode_isRecoverable", "AMediaCodecActionCode_isTransient", "AMediaCrypto_isCryptoSchemeSupported", "AMediaCrypto_requiresSecureDecoderComponent", "AMediaDrm_isCryptoSchemeSupported", "AMediaExtractor_advance", "AMediaFormat_getBuffer", "AMediaFormat_getDouble", "AMediaFormat_getFloat", "AMediaFormat_getInt32", "AMediaFormat_getInt64", "AMediaFormat_getRect", "AMediaFormat_getSize", "AMediaFormat_getString", "APerformanceHint_isFeatureSupported", "APersistableBundle_getBoolean", "APersistableBundle_getDouble", "APersistableBundle_getInt", "APersistableBundle_getLong", "APersistableBundle_getPersistableBundle", "APersistableBundle_isEqual", "ASensor_isDirectChannelTypeSupported", "ASensor_isWakeUpSensor", "AStatus_isOk", "ATrace_isEnabled"};
+    if (bools.contains(name)) {
+        return 8;
+    }
+    return name == "AFont_getWeight" ? 16 : 0;
+}
+
+void narrow_call(tsugiki_state* s, const Stub& stub) {
+    generic_call(s, stub);
+    s->x[0] = stub.data == 8 ? uint8_t(s->x[0]) : uint16_t(s->x[0]);
+}
+
 uint64_t resolve(const Loaded& l, const std::string& name, bool weak) {
     if (uint64_t guest = guest_export(name)) {
         return guest;
@@ -350,6 +365,9 @@ uint64_t resolve(const Loaded& l, const std::string& name, bool weak) {
     if (!host_code(host)) {
         // data, the guest reads it where it is
         return reinterpret_cast<uint64_t>(host);
+    }
+    if (int width = narrow_result(name)) {
+        return make_stub({narrow_call, host, uint64_t(width), strdup(name.c_str())});
     }
     return make_stub({generic_call, host, 0, strdup(name.c_str())});
 }
@@ -587,21 +605,12 @@ void generic_call(tsugiki_state* s, const Stub& stub) {
     if (trace && std::strcmp(stub.name, "host") == 0) {
         bool vm = false;
         int slot = host_jni_slot(stub.host, &vm);
-        // or x0 is an env or a vm and the function is in its table
-        uint64_t first = c.ints[0] & ~uint64_t(7);
-        if (slot < 0 && first && msync(reinterpret_cast<void*>(first & ~uint64_t(4095)), 4096, MS_ASYNC) == 0) {
-            uint64_t table = *reinterpret_cast<const uint64_t*>(first) & ~uint64_t(7);
-            if (table && msync(reinterpret_cast<void*>(table & ~uint64_t(4095)), 8192, MS_ASYNC) == 0) {
-                for (int i = 0; i < 232 && slot < 0; ++i) {
-                    if (reinterpret_cast<void* const*>(table)[i] == stub.host) {
-                        slot = i;
-                        vm = i < 8;
-                    }
-                }
-            }
+        // or x0 is an env and the function is in its table
+        if (slot < 0) {
+            slot = env_slot(c.ints[0], stub.host);
         }
         if (slot >= 0) {
-            std::snprintf(named, sizeof named, "host %s %d", vm ? "vm?" : "jni", slot);
+            std::snprintf(named, sizeof named, "host %s %d", vm ? "vm" : "jni", slot);
             name = named;
         }
     }

@@ -3,6 +3,8 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -29,27 +31,29 @@ static_assert(offsetof(Frame, module) == 176 && offsetof(Frame, fp_result) == 20
 struct Slot {
     uint64_t guest;
     int kind;
+    // jni natives get 'i' or 'f' per java param, empty when we don't know
+    std::string params;
 };
 
 std::mutex slot_lock;
 std::vector<Slot> slots;
-std::map<std::pair<uint64_t, int>, size_t> slot_of;
+std::map<std::tuple<uint64_t, int, std::string>, size_t> slot_of;
 
 }  // namespace
 
-uint64_t host_callback(uint64_t guest_function, int kind) {
+uint64_t host_callback(uint64_t guest_function, int kind, const std::string& params) {
     if (guest_function == 0) {
         return 0;
     }
     std::lock_guard guard(slot_lock);
-    auto key = std::make_pair(guest_function, kind);
+    auto key = std::make_tuple(guest_function, kind, params);
     auto it = slot_of.find(key);
     if (it == slot_of.end()) {
         size_t most = size_t(tsugiki_callbacks_end - tsugiki_callbacks) / 16;
         if (slots.size() >= most) {
             fail("out of callback trampolines");
         }
-        slots.push_back({guest_function, kind});
+        slots.push_back({guest_function, kind, params});
         it = slot_of.emplace(key, slots.size() - 1).first;
     }
     return reinterpret_cast<uint64_t>(tsugiki_callbacks + 16 * it->second);
@@ -73,6 +77,7 @@ using namespace tsugiki::rt;
 extern "C" uint64_t tsugiki_enter(Frame* f) {
     uint64_t function;
     int kind = int(f->kind);
+    std::string params;
     if (kind == 3) {
         Slot slot;
         {
@@ -81,6 +86,7 @@ extern "C" uint64_t tsugiki_enter(Frame* f) {
         }
         function = slot.guest;
         kind = slot.kind;
+        params = std::move(slot.params);
     } else if (kind == 4) {
         // a raw guest pointer the host called, see on_segv
         function = f->vaddr;
@@ -98,10 +104,39 @@ extern "C" uint64_t tsugiki_enter(Frame* f) {
         call.fps[i][0] = f->fps[i][0];
         call.fps[i][1] = f->fps[i][1];
     }
-    // we can't know how many there are, so plenty: flutter's nativeSetViewportMetrics has 13 there,
+    // we can't know how many there are so plenty, flutter's nativeSetViewportMetrics has 13 there
     // reading past the real ones only reads the caller's frame
     call.stack = f->stack + 2;
     call.stack_count = 32;
+    // a jni native we know the signature of gets every arg where aapcs64 wants it, more than 8 fp ones
+    // or ints past 8 mixed with them come off the host stack in a different order
+    std::vector<uint64_t> stack;
+    if (!params.empty()) {
+        size_t hi = 2, hf = 0, hs = 0, gi = 2, gf = 0;
+        for (char p : params) {
+            if (p == '-') {
+                continue;
+            }
+            if (p == 'f') {
+                uint64_t lo = hf < 8 ? f->fps[hf++][0] : f->stack[hs++];
+                if (gf < 8) {
+                    call.fps[gf][0] = lo;
+                    call.fps[gf++][1] = 0;
+                } else {
+                    stack.push_back(lo);
+                }
+            } else {
+                uint64_t v = hi < 6 ? f->ints[hi++] : f->stack[hs++];
+                if (gi < 8) {
+                    call.ints[gi++] = v;
+                } else {
+                    stack.push_back(v);
+                }
+            }
+        }
+        call.stack = stack.data();
+        call.stack_count = int(stack.size());
+    }
     if (kind == jni_env) {
         call.ints[0] = guest_env(reinterpret_cast<void*>(call.ints[0]));
     } else if (kind == jni_vm) {

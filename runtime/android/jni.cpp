@@ -176,7 +176,12 @@ void register_natives_slot(tsugiki_state* s, const Stub& stub) {
     int count = int(s->x[3]);
     std::vector<JNINativeMethod> host(methods, methods + count);
     for (auto& m : host) {
-        m.fnPtr = reinterpret_cast<void*>(host_callback(reinterpret_cast<uint64_t>(m.fnPtr), jni_env));
+        std::string kinds;
+        for (char c : parameters(m.signature)) {
+            kinds += c == 'F' || c == 'D' ? 'f' : 'i';
+        }
+        // "-" means no params at all, which we know, unlike an empty string
+        m.fnPtr = reinterpret_cast<void*>(host_callback(reinterpret_cast<uint64_t>(m.fnPtr), jni_env, kinds.empty() ? "-" : kinds));
     }
     s->x[2] = reinterpret_cast<uint64_t>(host.data());
     call_slot(s, stub.data);
@@ -309,7 +314,7 @@ uint64_t view_of(void* host, const uint64_t* table) {
 
 }  // namespace
 
-// jni calls returning less than 32 bits: art leaves junk above them in rax,
+// jni calls returning less than 32 bits, art leaves junk above them in rax
 // rust on arm64 counts on them coming back extended (ExceptionCheck said yes to everything)
 uint64_t jni_result(size_t slot, uint64_t value) {
     switch (slot) {
@@ -373,7 +378,7 @@ uint64_t guest_vm(void* host_vm) {
 }
 
 int host_jni_slot(const void* function, bool* vm) {
-    // not seen any yet: ask art for its vm, the env table is the same on every thread
+    // not seen any yet so ask art for its vm, the env table is the same on every thread
     if (!host_env_functions.load(std::memory_order_relaxed)) {
         using Created = jint (*)(JavaVM**, jsize, jsize*);
         if (auto created = reinterpret_cast<Created>(dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs"))) {

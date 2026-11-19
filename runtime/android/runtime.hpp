@@ -39,7 +39,8 @@ uint64_t jni_import(const std::string& name);
 
 // host-callable pointer that runs a guest function, kind as below
 enum Kind : int { plain = 0, jni_env = 1, jni_vm = 2 };
-uint64_t host_callback(uint64_t guest_function, int kind);
+// params has 'i' or 'f' per java param of a jni native, for exact arg placement
+uint64_t host_callback(uint64_t guest_function, int kind, const std::string& params = {});
 
 // runs a guest function on this thread, nested or not
 struct Call {
