@@ -124,27 +124,47 @@ Modules& modules() {
 }
 
 // setprop debug.tsugiki.interpret 1, or TSUGIKI_INTERPRET=1, runs every guest lib thru the interpreter,
-// handy to tell a lifter bug from anything else
-bool interpret_everything() {
-    static const bool on = [] {
+// handy to tell a lifter bug from anything else; a list of sonames (libapp.so,libfoo.so) just those
+struct Interpreted {
+    bool all = false;
+    std::vector<std::string> libs;
+};
+
+const Interpreted& interpreted() {
+    static const Interpreted on = [] {
         char value[PROP_VALUE_MAX] = {};
         __system_property_get("debug.tsugiki.interpret", value);
         const char* env = std::getenv("TSUGIKI_INTERPRET");
-        return value[0] == '1' || (env && env[0] == '1');
+        std::string list = env && env[0] ? env : value;
+        Interpreted i;
+        i.all = list == "1";
+        for (size_t at = 0; !i.all && at < list.size();) {
+            size_t comma = std::min(list.find(',', at), list.size());
+            if (comma > at) {
+                i.libs.push_back(list.substr(at, comma - at));
+            }
+            at = comma + 1;
+        }
+        return i;
     }();
     return on;
 }
 
+bool interpret_module(const tsugiki_module* m) {
+    const Interpreted& i = interpreted();
+    return i.all || std::find(i.libs.begin(), i.libs.end(), m->soname) != i.libs.end();
+}
+
 tsugiki_code find(uint64_t address) {
-    if (interpret_everything()) {
-        return nullptr;
-    }
     Modules& all = modules();
     Loaded** list = all.list.load(std::memory_order_acquire);
     size_t count = all.count.load(std::memory_order_acquire);
     for (size_t i = 0; i < count; ++i) {
         Loaded* l = list[i];
         if (address - l->base < l->size) {
+            if (interpret_module(l->module)) {
+                return nullptr;
+            }
             uint64_t offset = address - l->base;
             const tsugiki_entry* begin = l->module->entries;
             const tsugiki_entry* end = begin + l->module->count;
@@ -1014,7 +1034,7 @@ Place place(uint64_t pc) {
         p.guest = l->library->executable(offset);
         p.ops = l->module->ops;
         p.op_count = l->module->op_count;
-        if (rt::interpret_everything()) {
+        if (rt::interpret_module(l->module)) {
             return p;
         }
         const tsugiki_entry* begin = l->module->entries;

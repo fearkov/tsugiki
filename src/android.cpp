@@ -247,6 +247,28 @@ std::optional<Prepared> prepare(const std::string& path, const std::string& dir,
     fs::copy_file(path, image, fs::copy_options::overwrite_existing);
 
     auto program = lift::discover(library);
+    // for hunting lifter bugs: TSUGIKI_LIFT_ONLY=libfoo.so:lo-hi translates only the functions starting in there,
+    // the rest goes to the interpreter
+    if (const char* only = std::getenv("TSUGIKI_LIFT_ONLY"); only && std::string(only).starts_with(soname + ":")) {
+        std::string range = std::string(only).substr(soname.size() + 1);
+        uint64_t low = std::stoull(range, nullptr, 16), high = std::stoull(range.substr(range.find('-') + 1), nullptr, 16);
+        lift::Program kept;
+        for (lift::Function& f : program.functions) {
+            if (f.start >= low && f.start < high) {
+                kept.starts[f.start] = kept.functions.size();
+                kept.functions.push_back(std::move(f));
+            }
+        }
+        for (auto [stub, target] : program.plt) {
+            if (kept.starts.contains(stub) && kept.starts.contains(target)) {
+                kept.plt[stub] = target;
+            }
+        }
+        kept.ops = std::move(program.ops);
+        program = std::move(kept);
+        std::printf("%s: only %zu functions in %llx-%llx\n", soname.c_str(), program.functions.size(), (unsigned long long)low,
+                    (unsigned long long)high);
+    }
     // about 30k instructions a file, each a few seconds
     auto parts = lift::emit_parts(program, id, 30000);
     parts[0] += module_cpp(id, soname, executable);
