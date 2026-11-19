@@ -15,6 +15,7 @@ Android-x86 as is.
   <img src="docs/screenshots/gcompris.jpg" height="400" alt="GCompris">
   <img src="docs/screenshots/spd.png" height="400" alt="Shattered Pixel Dungeon">
   <img src="docs/screenshots/sgtpuzzles.png" height="400" alt="Simon Tatham's Puzzles">
+  <img src="docs/screenshots/shorey.png" height="400" alt="Shorey">
   <br>
   <img src="docs/screenshots/freedoom.jpg" width="366" alt="Freedoom">
   <img src="docs/screenshots/tuxpaint.png" width="366" alt="Tux Paint">
@@ -24,12 +25,12 @@ Android-x86 as is.
 </p>
 
 The Battle for Wesnoth, Organic Maps, GCompris (Qt 6), Shattered Pixel Dungeon,
-Simon Tatham's Puzzles, Freedoom, Tux Paint, Revengate (Godot 4) and
-TerraTactician Expandoria (Rust and Bevy), F-Droid builds that only ship arm64
-libraries, translated by tsugiki and running on an x86_64 Android 15 emulator
-that can't run arm64 code at all. Wesnoth, GCompris, Freedoom, Revengate and
-TerraTactician have no x86_64 build anywhere on F-Droid. Map data ©
-OpenStreetMap contributors.
+Simon Tatham's Puzzles, Shorey (Flutter), Freedoom, Tux Paint, Revengate
+(Godot 4) and TerraTactician Expandoria (Rust and Bevy), F-Droid builds that
+only ship arm64 libraries, translated by tsugiki and running on an x86_64
+Android 15 emulator that can't run arm64 code at all. Wesnoth, GCompris,
+Shorey, Freedoom, Revengate and TerraTactician have no x86_64 build anywhere on
+F-Droid. Map data © OpenStreetMap contributors.
 
 ## Status
 
@@ -37,8 +38,10 @@ Early, but real apps run. What works so far:
 
 - integer, FP and AdvSIMD code, one C++ function per guest function, built with
   the NDK into an x86_64 library that carries the original image
-- finding code through `.eh_frame`, symbols, relocations, code pointers and jump
-  tables
+- finding code through `.eh_frame`, symbols, relocations, code pointers, jump
+  tables and the function list in Dart's AOT snapshots, so Flutter apps run too
+- an interpreter for whatever was still missed, with the same semantics as the
+  translated code, that hands back to translated code as soon as it can
 - calls both ways between translated code and the x86_64 system: JNI, callbacks,
   `dlopen`/`dlsym`, raw function pointers, signal handlers, and the structs and
   constants that differ between the two (`stat`, `epoll_event`, `fenv_t`, `open`
@@ -49,14 +52,15 @@ Early, but real apps run. What works so far:
 - Qt 6 apps: their per-ABI library lists get pointed at x86_64, and code that
   reads its own `.so` files sees the arm64 originals
 - JITs that can fall back, like QML's and PCRE2's, are refused executable memory
-  and interpret instead
+  and interpret instead; ones that can't, like LuaJIT's, get their code run by
+  the interpreter
 
 Not yet:
 
 - signal handlers get the x86_64 context, so runtimes that scan the stack from
   one (Mono, Unity) won't work
-- apps that generate code at run time, like JIT emulators, can't be translated
-  ahead of time
+- code generated at run time only ever runs in the interpreter, which is many
+  times slower than translated code
 - speed: a tight loop like a CRC runs at native speed, but code full of small
   calls is about five times slower for now
 
@@ -92,7 +96,8 @@ make -C build -j
 Translating needs the Android NDK (`ANDROID_NDK_HOME` or the newest one in
 `~/Android/Sdk/ndk`), and making APKs needs the SDK's build-tools and openssl.
 `tests/android/run.sh` checks translated code against native builds on a device
-or emulator.
+or emulator, and `tests/android/sweep.py` translates arm64-only F-Droid apps in
+bulk and checks that they start.
 
 ## Note
 
