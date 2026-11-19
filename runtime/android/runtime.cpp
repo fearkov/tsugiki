@@ -20,10 +20,12 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
 #include "elf.hpp"
+#include "interp.hpp"
 
 extern "C" char tsugiki_raw_entry[];
 
@@ -120,7 +122,22 @@ Modules& modules() {
     return *m;
 }
 
+// setprop debug.tsugiki.interpret 1, or TSUGIKI_INTERPRET=1, runs every guest lib thru the interpreter,
+// handy to tell a lifter bug from anything else
+bool interpret_everything() {
+    static const bool on = [] {
+        char value[PROP_VALUE_MAX] = {};
+        __system_property_get("debug.tsugiki.interpret", value);
+        const char* env = std::getenv("TSUGIKI_INTERPRET");
+        return value[0] == '1' || (env && env[0] == '1');
+    }();
+    return on;
+}
+
 tsugiki_code find(uint64_t address) {
+    if (interpret_everything()) {
+        return nullptr;
+    }
     Modules& all = modules();
     Loaded** list = all.list.load(std::memory_order_acquire);
     size_t count = all.count.load(std::memory_order_acquire);
@@ -888,6 +905,11 @@ extern "C" void tsugiki_call(tsugiki_state* s) {
             tsugiki_call(s);
             return;
         }
+        // guest code we never translated, slow but it runs
+        if (interp::place(s->pc).guest) {
+            tsugiki_interpret(s);
+            return;
+        }
         // host code through a plain pointer: vtables of host apis, eglGetProcAddress and such
         if (host_code_cached(s->pc)) {
             Stub stub{generic_call, reinterpret_cast<void*>(s->pc), 0, "host"};
@@ -945,3 +967,56 @@ extern "C" void tsugiki_trap(tsugiki_state* s, uint64_t pc, uint32_t raw, const 
     log_guest_backtrace(s);
     fail("%s at 0x%llx (0x%08x), lr 0x%llx", why, (unsigned long long)pc, raw, (unsigned long long)s->x[30]);
 }
+
+namespace tsugiki::interp {
+
+Place place(uint64_t pc) {
+    Place p;
+    rt::Modules& all = rt::modules();
+    rt::Loaded** list = all.list.load(std::memory_order_acquire);
+    size_t count = all.count.load(std::memory_order_acquire);
+    for (size_t i = 0; i < count; ++i) {
+        const rt::Loaded* l = list[i];
+        uint64_t offset = pc - l->base;
+        if (offset >= l->size) {
+            continue;
+        }
+        p.guest = l->library->executable(offset);
+        p.ops = l->module->ops;
+        p.op_count = l->module->op_count;
+        if (rt::interpret_everything()) {
+            return p;
+        }
+        const tsugiki_entry* begin = l->module->entries;
+        const tsugiki_entry* end = begin + l->module->count;
+        const tsugiki_entry* e = std::lower_bound(begin, end, offset, [](const tsugiki_entry& a, uint64_t o) { return a.address < o; });
+        if (e != end && e->address == offset) {
+            p.code = e->code;
+        }
+        return p;
+    }
+    return p;
+}
+
+void started(uint64_t pc) {
+    // the first couple hundred places is plenty to see what discovery missed
+    static std::atomic<int> logged{0};
+    if (logged.load(std::memory_order_relaxed) >= 200) {
+        return;
+    }
+    static std::mutex lock;
+    static auto* seen = new std::set<uint64_t>;
+    std::lock_guard guard(lock);
+    if (!seen->insert(pc).second) {
+        return;
+    }
+    logged.fetch_add(1, std::memory_order_relaxed);
+    Dl_info info{};
+    if (rt::guest_dladdr(pc, &info)) {
+        rt::log("interpreting %s+0x%llx", info.dli_fname, (unsigned long long)(pc - reinterpret_cast<uint64_t>(info.dli_fbase)));
+    } else {
+        rt::log("interpreting 0x%llx", (unsigned long long)pc);
+    }
+}
+
+}  // namespace tsugiki::interp

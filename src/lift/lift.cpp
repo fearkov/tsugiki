@@ -5,6 +5,7 @@
 #include <cstring>
 #include <optional>
 #include <sstream>
+#include <unordered_set>
 
 #include "bytes.hpp"
 #include "eh_frame.hpp"
@@ -134,7 +135,8 @@ public:
         for (uint64_t entry : function_.entries) {
             out_ << "    case " << hex(entry) << ": goto L_" << name(entry) << ";\n";
         }
-        out_ << "    default: tsugiki_trap(s, s->pc, 0, \"no entry there\");\n    }\n";
+        // somewhere we never saw a way in, the interpreter runs it
+        out_ << "    default: tsugiki_interpret(s); return;\n    }\n";
         for (size_t i = 0; i < function_.code.size(); ++i) {
             uint64_t pc = function_.start + 4 * i;
             if (function_.labels.contains(pc) || function_.entries.contains(pc)) {
@@ -148,6 +150,13 @@ public:
         }
         // ran off the end
         out_ << "    ts_flags_out(s, fl);\n    s->pc = tb + " << hex(function_.end) << ";\n    return;\n}\n\n";
+    }
+
+    // just one instruction, for the interpreter's fp/simd table
+    void one(const Instruction& in) {
+        pc_ = 0;
+        next_ = 4;
+        instruction(in);
     }
 
     // what an instruction does to nzcv, going by the c++ we write for it
@@ -1100,6 +1109,32 @@ void flag_flow(Program& program) {
 
 }  // namespace
 
+// every fp/simd word anywhere in the code, the interpreter runs them by the lib's own code
+static std::vector<uint32_t> simd_words(const elf::Library& library) {
+    std::unordered_set<uint32_t> seen;
+    std::vector<uint32_t> words;
+    for (auto [start, end] : library.code_ranges()) {
+        start = (start + 3) & ~uint64_t(3);
+        auto bytes = start < end ? library.at(start, (end - start) & ~uint64_t(3)) : std::nullopt;
+        if (!bytes) {
+            continue;
+        }
+        for (size_t i = 0; i + 4 <= bytes->size(); i += 4) {
+            uint32_t word;
+            std::memcpy(&word, bytes->data() + i, 4);
+            if (!seen.insert(word).second) {
+                continue;
+            }
+            Op op = a64::decode(word).op;
+            if (a64::is_simd(op) || op == Op::simd_multiple || op == Op::simd_multiple_post || op == Op::simd_single || op == Op::simd_single_post) {
+                words.push_back(word);
+            }
+        }
+    }
+    std::sort(words.begin(), words.end());
+    return words;
+}
+
 Program discover(const elf::Library& library) {
     std::vector<std::pair<uint64_t, uint64_t>> ranges;
     auto fdes = eh_frame::read(library);
@@ -1332,7 +1367,59 @@ Program discover(const elf::Library& library) {
         }
     }
     flag_flow(program);
+    program.ops = simd_words(library);
     return program;
+}
+
+// the fp/simd words, a function each, sorted for the interpreter's lookup;
+// big libs get several files, the table goes in the last one
+static std::vector<std::string> ops_parts(const Program& program, const std::string& id, size_t per_part = 8000) {
+    const std::vector<uint32_t>& ops = program.ops;
+    size_t count = std::max<size_t>(1, (ops.size() + per_part - 1) / per_part);
+    bool split = count > 1;
+    std::string space = "tsugiki_lib_ops_" + id;
+    std::string storage = split ? "__attribute__((visibility(\"hidden\"))) void " : "static void ";
+    std::vector<std::string> parts;
+    for (size_t p = 0; p < count; ++p) {
+        std::ostringstream out;
+        out << "// made by tsugiki, don't edit\n";
+        out << "#include \"tsugiki.h\"\n\n";
+        out << "extern \"C\" __attribute__((visibility(\"hidden\"))) uint64_t tsugiki_base_" << id << ";\n";
+        out << "#define TB tsugiki_base_" << id << "\n\n";
+        if (split) {
+            out << "namespace " << space << " {\n\n";
+        }
+        Function none;
+        std::set<uint64_t> referenced;
+        for (size_t i = p * per_part; i < std::min(ops.size(), (p + 1) * per_part); ++i) {
+            std::ostringstream code;
+            Emitter(program, none, code, storage, referenced).one(a64::decode(ops[i]));
+            out << storage << "o_" << name(ops[i]) << "(tsugiki_state* __restrict s) {\n";
+            out << "    const uint64_t tb = TB;\n    (void)tb;\n    tsugiki_flags fl = ts_flags_in(s);\n";
+            out << code.str() << "    ts_flags_out(s, fl);\n}\n\n";
+        }
+        if (p + 1 == count) {
+            if (split) {
+                for (uint32_t word : ops) {
+                    out << storage << "o_" << name(word) << "(tsugiki_state* __restrict s);\n";
+                }
+                out << "\n}  // namespace " << space << "\n\n";
+            }
+            out << "extern \"C\" const tsugiki_op tsugiki_ops_" << id << "[] = {\n";
+            for (uint32_t word : ops) {
+                out << "    {" << hex(word) << ", " << (split ? space + "::" : "") << "o_" << name(word) << "},\n";
+            }
+            if (ops.empty()) {
+                out << "    {0, nullptr},\n";
+            }
+            out << "};\n";
+            out << "extern \"C\" const uint64_t tsugiki_op_count_" << id << " = " << ops.size() << ";\n";
+        } else if (split) {
+            out << "}  // namespace " << space << "\n";
+        }
+        parts.push_back(out.str());
+    }
+    return parts;
 }
 
 std::vector<std::string> emit_parts(const Program& program, const std::string& id, size_t per_part) {
@@ -1408,11 +1495,18 @@ std::vector<std::string> emit_parts(const Program& program, const std::string& i
         }
         parts.push_back(out.str());
     }
+    for (std::string& part : ops_parts(program, id)) {
+        parts.push_back(std::move(part));
+    }
     return parts;
 }
 
 std::string emit(const Program& program, const std::string& id) {
-    return emit_parts(program, id, SIZE_MAX)[0];
+    std::string all;
+    for (const std::string& part : emit_parts(program, id, SIZE_MAX)) {
+        all += part;
+    }
+    return all;
 }
 
 }  // namespace tsugiki::lift

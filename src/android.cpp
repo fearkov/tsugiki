@@ -98,13 +98,16 @@ std::string library_id(const std::string& soname) {
 std::string module_cpp(const std::string& id, const std::string& soname, bool executable) {
     std::string m = "tsugiki_module_" + id;
     std::string size = "    " + m + ".image_size = uint64_t(tsugiki_image_" + id + "_end - tsugiki_image_" + id + ");\n" +
-                       "    " + m + ".space_size = uint64_t(tsugiki_space_" + id + "_end - tsugiki_space_" + id + ");\n";
+                       "    " + m + ".space_size = uint64_t(tsugiki_space_" + id + "_end - tsugiki_space_" + id + ");\n" +
+                       "    " + m + ".op_count = tsugiki_op_count_" + id + ";\n";
     std::string out = "extern \"C\" const uint8_t tsugiki_image_" + id + "[];\n" +
                       "extern \"C\" const uint8_t tsugiki_image_" + id + "_end[];\n" +
                       "extern \"C\" uint8_t tsugiki_space_" + id + "[];\n" +
                       "extern \"C\" uint8_t tsugiki_space_" + id + "_end[];\n" +
+                      "extern \"C\" const tsugiki_op tsugiki_ops_" + id + "[];\n" +
+                      "extern \"C\" const uint64_t tsugiki_op_count_" + id + ";\n" +
                       "extern \"C\" __attribute__((visibility(\"hidden\"))) tsugiki_module " + m + " = {\"" + soname + "\", tsugiki_entries_" + id +
-                      ", tsugiki_entry_count_" + id + ", &tsugiki_base_" + id + ", tsugiki_image_" + id + ", 0, nullptr, tsugiki_space_" + id + ", 0};\n";
+                      ", tsugiki_entry_count_" + id + ", &tsugiki_base_" + id + ", tsugiki_image_" + id + ", 0, nullptr, tsugiki_space_" + id + ", 0, tsugiki_ops_" + id + ", 0};\n";
     if (executable) {
         return out + "int main(int argc, char** argv, char** envp) {\n" + size + "    return tsugiki_main(&" + m + ", argc, argv, envp);\n}\n";
     }
@@ -185,8 +188,10 @@ void build_runtime(const std::string& dir) {
     std::string source = TSUGIKI_SOURCE_DIR;
     std::vector<std::string> files;
     for (const char* file : {"runtime/android/runtime.cpp", "runtime/android/libc.cpp", "runtime/android/jni.cpp", "runtime/android/entries.cpp",
-                             "runtime/android/system.cpp", "runtime/android/entry.S", "runtime/simd.cpp", "src/elf.cpp", "src/eh_frame.cpp",
-                             "runtime/android/runtime.hpp", "runtime/tsugiki.h", "runtime/tsugiki_simd.h", "src/elf.hpp", "src/eh_frame.hpp"}) {
+                             "runtime/android/system.cpp", "runtime/android/entry.S", "runtime/simd.cpp", "runtime/interp.cpp", "src/elf.cpp",
+                             "src/eh_frame.cpp", "src/a64/decoder.cpp", "src/a64/simd.cpp", "runtime/android/runtime.hpp", "runtime/tsugiki.h",
+                             "runtime/tsugiki_simd.h", "runtime/interp.hpp", "src/elf.hpp", "src/eh_frame.hpp", "src/a64/decoder.hpp",
+                             "src/a64/simd.hpp", "src/a64/ops.hpp"}) {
         files.push_back(source + "/" + file);
     }
     if (!stale(fs::path(dir) / "libtsugiki.so", files)) {
@@ -199,7 +204,7 @@ void build_runtime(const std::string& dir) {
         }
     }
     // hidden and bound to itself: a guest lib re-exporting its static libc++ must never catch our own calls
-    run(compiler() + " -std=c++20 -O2 -fPIC -shared -fvisibility=hidden -fvisibility-inlines-hidden -I" + quote(source + "/runtime") + " -I" +
+    run(compiler() + " -std=c++20 -O2 -mcx16 -fPIC -shared -fvisibility=hidden -fvisibility-inlines-hidden -I" + quote(source + "/runtime") + " -I" +
         quote(source + "/src") + sources + " -llog -ldl -static-libstdc++ -Wl,--exclude-libs,ALL -Wl,-Bsymbolic -Wl,-soname,libtsugiki.so -o " +
         quote(dir + "/libtsugiki.so"));
 }

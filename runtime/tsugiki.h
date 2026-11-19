@@ -46,6 +46,12 @@ struct tsugiki_entry {
     tsugiki_code code;
 };
 
+// one fp/simd word as its own lil function, the interpreter runs these
+struct tsugiki_op {
+    uint32_t word;
+    tsugiki_code code;
+};
+
 // one translated library, handed to the runtime when it loads
 struct tsugiki_module {
     const char* soname;
@@ -61,6 +67,9 @@ struct tsugiki_module {
     // bss in the translated .so the image goes into, so cfi sees guest code inside a library
     uint8_t* space;
     uint64_t space_size;
+    // its fp/simd words, sorted
+    const tsugiki_op* ops;
+    uint64_t op_count;
 };
 
 // the runtime builds with hidden visibility, only this api is exported
@@ -72,6 +81,8 @@ void tsugiki_load(tsugiki_module* m);
 int tsugiki_main(tsugiki_module* m, int argc, char** argv, char** envp);
 // runs whatever is at s->pc, one function's worth
 void tsugiki_call(tsugiki_state* s);
+// same but for code w/o a translation, one instruction at a time
+void tsugiki_interpret(tsugiki_state* s);
 void tsugiki_svc(tsugiki_state* s, uint32_t imm);
 // unimplemented or bad stuff, doesn't return
 [[noreturn]] void tsugiki_trap(tsugiki_state* s, uint64_t pc, uint32_t raw, const char* why);

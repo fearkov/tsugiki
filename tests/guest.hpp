@@ -14,6 +14,23 @@
 #include "loader.hpp"
 #include "test.hpp"
 
+// while one of these lives, guest code runs thru the interpreter, translations ignored
+inline bool& interpreted() {
+    static bool on = false;
+    return on;
+}
+
+struct Interpreted {
+    Interpreted() {
+        interpreted() = true;
+        tsugiki_interpret_all(true);
+    }
+    ~Interpreted() {
+        interpreted() = false;
+        tsugiki_interpret_all(false);
+    }
+};
+
 struct Guest {
     std::unique_ptr<tsugiki::elf::Library> library;
     Image image;
@@ -29,13 +46,13 @@ struct Guest {
         return c;
     }
 
-    Guest(const std::string& path, const tsugiki_entry* entries, uint64_t count, uint64_t* base) {
+    Guest(const std::string& path, const tsugiki_entry* entries, uint64_t count, uint64_t* base, const tsugiki_op* ops, uint64_t op_count) {
         std::ifstream file(path, std::ios::binary);
         std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
         library = std::make_unique<tsugiki::elf::Library>(std::move(bytes), path);
         image = load_image(*library, [](const std::string&) { return uint64_t(0); });
         *base = image.base;
-        tsugiki_add_module(image.base, image.size, entries, count);
+        tsugiki_add_module(image.base, image.size, entries, count, ops, op_count);
         // bionic's tls slots, the stack guard in slot 5 like on arm64 and x86_64
         tls[5] = 0x5ca1ab1e0ddba11ull;
         state.tpidr = reinterpret_cast<uint64_t>(tls);
@@ -62,6 +79,8 @@ struct Guest {
             state.v[i].hi = 0;
             ++i;
         }
+        // the dispatch cache holds translated code, the interpreter must never see it
+        state.cache = interpreted() ? nullptr : cache.get();
         return tsugiki_run(&state, address(name), args);
     }
 

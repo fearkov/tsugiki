@@ -217,6 +217,19 @@ bool Library::code(uint64_t address) const {
     return false;
 }
 
+std::vector<std::pair<uint64_t, uint64_t>> Library::code_ranges() const {
+    if (!code_sections_.empty()) {
+        return code_sections_;
+    }
+    std::vector<std::pair<uint64_t, uint64_t>> ranges;
+    for (const Segment& s : segments_) {
+        if (s.type == segment::load && s.executable()) {
+            ranges.emplace_back(s.vaddr, s.vaddr + s.filesz);
+        }
+    }
+    return ranges;
+}
+
 void Library::read_sections() {
     if (shoff_ == 0 || shnum_ == 0) {
         return;

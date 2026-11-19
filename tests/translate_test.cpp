@@ -18,6 +18,8 @@ extern "C" {
 extern const tsugiki_entry tsugiki_entries_kernels[];
 extern const uint64_t tsugiki_entry_count_kernels;
 extern uint64_t tsugiki_base_kernels;
+extern const tsugiki_op tsugiki_ops_kernels[];
+extern const uint64_t tsugiki_op_count_kernels;
 
 uint64_t native_fib(uint64_t);
 int64_t native_flags_back(int64_t, int64_t);
@@ -46,7 +48,8 @@ uint64_t native_collatz(uint64_t);
 namespace {
 
 Guest& guest() {
-    static Guest* g = new Guest(std::string(SAMPLE_DIR) + "/libkernels.so", tsugiki_entries_kernels, tsugiki_entry_count_kernels, &tsugiki_base_kernels);
+    static Guest* g = new Guest(std::string(SAMPLE_DIR) + "/libkernels.so", tsugiki_entries_kernels, tsugiki_entry_count_kernels, &tsugiki_base_kernels, tsugiki_ops_kernels,
+                                tsugiki_op_count_kernels);
     return *g;
 }
 
@@ -139,4 +142,15 @@ TEST(speed_against_native) {
     CHECK_EQ(a, b);
     CHECK_EQ(c, d);
     std::printf("     fib(30) %.1f ms vs %.1f native, crc of 1 MiB %.1f ms vs %.1f native\n", translated, native, crc_translated, crc_native);
+}
+
+// the same kernels w/ nothing translated, all thru the interpreter
+TEST(interpreted_kernels) {
+    Interpreted on;
+    translated_scalar_kernels();
+    translated_memory_kernels();
+    auto start = std::chrono::steady_clock::now();
+    CHECK_EQ(guest().call("fib", {25}), native_fib(25));
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::printf("     fib(25) interpreted %.1f ms\n", ms);
 }

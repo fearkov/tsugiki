@@ -36,6 +36,8 @@ struct Program {
     std::map<uint64_t, size_t> starts;
     // plt stub -> the function of ours its got slot holds, calls skip the stub and the dispatcher
     std::map<uint64_t, uint64_t> plt;
+    // every fp/simd word in the code, sorted, each gets its own lil function for the interpreter
+    std::vector<uint32_t> ops;
 };
 
 Program discover(const elf::Library& library);
@@ -44,7 +46,7 @@ Program discover(const elf::Library& library);
 std::string emit(const Program& program, const std::string& id);
 
 // the same as several files of about per_part instructions, for parallel builds;
-// the first one has the dispatcher's table
+// the first one has the dispatcher's table, the last one the fp/simd words
 std::vector<std::string> emit_parts(const Program& program, const std::string& id, size_t per_part);
 
 }  // namespace tsugiki::lift

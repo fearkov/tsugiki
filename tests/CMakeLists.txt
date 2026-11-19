@@ -98,8 +98,11 @@ add_library(neon_translated OBJECT ${NEON_TRANSLATED})
 target_include_directories(neon_translated PRIVATE ${PROJECT_SOURCE_DIR}/runtime)
 target_compile_options(neon_translated PRIVATE -O2 -mcx16 -w)
 
-add_library(tsugiki_host_runtime STATIC ${PROJECT_SOURCE_DIR}/runtime/host.cpp ${PROJECT_SOURCE_DIR}/runtime/simd.cpp)
-target_include_directories(tsugiki_host_runtime PUBLIC ${PROJECT_SOURCE_DIR}/runtime)
+add_library(tsugiki_host_runtime STATIC ${PROJECT_SOURCE_DIR}/runtime/host.cpp ${PROJECT_SOURCE_DIR}/runtime/simd.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/interp.cpp)
+target_include_directories(tsugiki_host_runtime PUBLIC ${PROJECT_SOURCE_DIR}/runtime PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_compile_options(tsugiki_host_runtime PRIVATE -mcx16)
+target_link_libraries(tsugiki_host_runtime PUBLIC tsugiki_core)
 
 add_executable(tsugiki_tests main.cpp a64_test.cpp bytes_test.cpp elf_test.cpp translate_test.cpp vectors_test.cpp neon_test.cpp loader.cpp
     $<TARGET_OBJECTS:kernels_native> $<TARGET_OBJECTS:kernels_translated>

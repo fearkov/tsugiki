@@ -13,12 +13,15 @@ extern "C" {
 extern const tsugiki_entry tsugiki_entries_neon[];
 extern const uint64_t tsugiki_entry_count_neon;
 extern uint64_t tsugiki_base_neon;
+extern const tsugiki_op tsugiki_ops_neon[];
+extern const uint64_t tsugiki_op_count_neon;
 }
 
 namespace {
 
 Guest& neon() {
-    static Guest* g = new Guest(std::string(SAMPLE_DIR) + "/libneon.so", tsugiki_entries_neon, tsugiki_entry_count_neon, &tsugiki_base_neon);
+    static Guest* g = new Guest(std::string(SAMPLE_DIR) + "/libneon.so", tsugiki_entries_neon, tsugiki_entry_count_neon, &tsugiki_base_neon, tsugiki_ops_neon,
+                                tsugiki_op_count_neon);
     return *g;
 }
 
@@ -393,4 +396,11 @@ TEST(soft_maxnum_minnum) {
             CHECK((std::isnan(sm) && std::isnan(wm)) || bits(sm) == bits(wm));
         }
     }
+}
+
+TEST(interpreted_neon) {
+    Interpreted on;
+    translated_neon_intrinsics();
+    translated_neon_estimates();
+    translated_aes_and_sha256();
 }

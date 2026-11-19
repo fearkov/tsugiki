@@ -1,6 +1,8 @@
 // the runtime on a plain linux host, for tests
 #include "host.hpp"
 
+#include "interp.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -17,7 +19,12 @@ struct Module {
     uint64_t size;
     const tsugiki_entry* entries;
     uint64_t count;
+    const tsugiki_op* ops;
+    uint64_t op_count;
 };
+
+// tests flip this to run everything thru the interpreter
+bool interpret_all = false;
 
 std::vector<Module>& modules() {
     static std::vector<Module> all;
@@ -29,7 +36,19 @@ std::map<uint64_t, tsugiki_code>& hosts() {
     return all;
 }
 
+const Module* module_of(uint64_t address) {
+    for (const Module& m : modules()) {
+        if (address - m.base < m.size) {
+            return &m;
+        }
+    }
+    return nullptr;
+}
+
 tsugiki_code find(uint64_t address) {
+    if (interpret_all && module_of(address)) {
+        return nullptr;
+    }
     for (const Module& m : modules()) {
         if (address - m.base < m.size) {
             uint64_t offset = address - m.base;
@@ -44,9 +63,30 @@ tsugiki_code find(uint64_t address) {
 
 }  // namespace
 
-void tsugiki_add_module(uint64_t base, uint64_t size, const tsugiki_entry* entries, uint64_t count) {
-    modules().push_back({base, size, entries, count});
+void tsugiki_add_module(uint64_t base, uint64_t size, const tsugiki_entry* entries, uint64_t count, const tsugiki_op* ops, uint64_t op_count) {
+    modules().push_back({base, size, entries, count, ops, op_count});
 }
+
+void tsugiki_interpret_all(bool on) {
+    interpret_all = on;
+}
+
+namespace tsugiki::interp {
+
+Place place(uint64_t pc) {
+    Place p;
+    if (const Module* m = module_of(pc)) {
+        p.guest = true;
+        p.ops = m->ops;
+        p.op_count = m->op_count;
+        p.code = find(pc);
+    }
+    return p;
+}
+
+void started(uint64_t) {}
+
+}  // namespace tsugiki::interp
 
 void tsugiki_add_host(uint64_t address, tsugiki_code code) {
     hosts()[address] = code;
@@ -69,6 +109,10 @@ extern "C" {
 
 void tsugiki_call(tsugiki_state* s) {
     tsugiki_code code = find(s->pc);
+    if (code == nullptr && module_of(s->pc)) {
+        tsugiki_interpret(s);
+        return;
+    }
     if (code == nullptr) {
         tsugiki_trap(s, s->pc, 0, "nothing to run there");
     }

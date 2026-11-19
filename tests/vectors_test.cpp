@@ -12,6 +12,8 @@ extern "C" {
 extern const tsugiki_entry tsugiki_entries_vectors[];
 extern const uint64_t tsugiki_entry_count_vectors;
 extern uint64_t tsugiki_base_vectors;
+extern const tsugiki_op tsugiki_ops_vectors[];
+extern const uint64_t tsugiki_op_count_vectors;
 
 double native_scalar_math(double, double, float, float);
 int64_t native_conversions(double, float, int64_t, uint32_t);
@@ -36,7 +38,8 @@ uint64_t native_lookup(const uint8_t*, uint8_t*, int);
 namespace {
 
 Guest& vectors() {
-    static Guest* g = new Guest(std::string(SAMPLE_DIR) + "/libvectors.so", tsugiki_entries_vectors, tsugiki_entry_count_vectors, &tsugiki_base_vectors);
+    static Guest* g = new Guest(std::string(SAMPLE_DIR) + "/libvectors.so", tsugiki_entries_vectors, tsugiki_entry_count_vectors, &tsugiki_base_vectors, tsugiki_ops_vectors,
+                                tsugiki_op_count_vectors);
     return *g;
 }
 
@@ -188,4 +191,11 @@ TEST(translated_vector_loops) {
     float r = g.s0();
     CHECK(same(r, native_matrix(m.data(), v.data(), out2.data())));
     CHECK(same(out1, out2));
+}
+
+// fp words go thru the lib's own lil functions here
+TEST(interpreted_vectors) {
+    Interpreted on;
+    translated_scalar_fp();
+    translated_vector_loops();
 }

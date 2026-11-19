@@ -129,6 +129,8 @@ public:
     bool code(uint64_t address) const;
     // end of the loaded section holding it, none without section headers
     std::optional<uint64_t> section_end(uint64_t address) const;
+    // where code is, executable sections or the r-x segments' file part w/o section headers
+    std::vector<std::pair<uint64_t, uint64_t>> code_ranges() const;
 
     // a pointer slot with relocations applied at base 0
     // none if it points at an import
